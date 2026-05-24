@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PDF Genius</title>
+    <meta name="description" content="Merge, sort, crop, remove pages, watermark, annotate & draw on PDFs — all client-side, no uploads.">
+    <link rel="canonical" href="https://pdf.genius-space.org">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#6c5ce7">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="PDF Genius">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,700;1,400;1,500&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="ambg"></div>
+
+<header>
+    <a class="logo" href="/">
+        <div class="logo-icon"><i class="fa-solid fa-file-pdf"></i></div>
+        <div class="logo-text">
+            <span class="p1">PDF</span>
+            <span class="p2">Genius</span>
+        </div>
+    </a>
+    <div class="hlinks">
+        <button class="hlink install-btn" id="pwa-install" style="display:none">
+            <i class="fa-solid fa-download"></i> Install App
+        </button>
+        <a class="hlink" href="https://genius-space.org" target="_blank">
+            <i class="fa-solid fa-globe"></i> Genius Space
+        </a>
+        <a class="hlink" href="https://github.com/NUCL3ARN30N/pdf-genius/" target="_blank">
+            <i class="fa-brands fa-github"></i> Source
+        </a>
+    </div>
+</header>
+
+<!-- ==================== UPLOAD SCREEN ==================== -->
+<div class="app on" id="screen-upload">
+    <div class="panel">
+        <div class="ph"><i class="fas fa-cloud-upload-alt"></i> Load PDFs</div>
+        <div class="pb">
+            <div class="upload-zone" id="upload-zone">
+                <i class="fas fa-file-pdf"></i>
+                <div class="upload-title">Drop PDF files here or click to browse</div>
+                <div class="hint">Add one or more PDFs — merge, edit pages, crop, annotate, watermark, then download</div>
+            </div>
+            <input type="file" id="file-input" accept=".pdf" multiple hidden>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== EDITOR SCREEN ==================== -->
+<div class="app" id="screen-editor">
+    <div class="top-bar">
+        <div class="top-left">
+            <button class="tool-btn" id="btn-add-more"><i class="fas fa-plus"></i> Add PDFs</button>
+            <input type="file" id="add-more-input" accept=".pdf" multiple hidden>
+            <div class="top-sep"></div>
+            <span class="top-stat"><i class="fas fa-file"></i> <span id="stat-pages">0</span> pages</span>
+            <span class="top-stat"><i class="fas fa-check-circle"></i> <span id="stat-selected">0</span> selected</span>
+        </div>
+        <div class="top-right">
+            <button class="tool-btn primary" id="btn-download"><i class="fas fa-download"></i> Download PDF</button>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="tool-btn" id="btn-select-all"><i class="fas fa-check-double"></i> Select All</button>
+        <button class="tool-btn" id="btn-deselect"><i class="fas fa-times"></i> Deselect</button>
+        <div class="tool-sep"></div>
+        <button class="tool-btn" id="btn-rotate" disabled><i class="fas fa-redo"></i> Rotate 90°</button>
+        <button class="tool-btn" id="btn-crop" disabled><i class="fas fa-crop-alt"></i> Crop</button>
+        <button class="tool-btn" id="btn-annotate" disabled><i class="fas fa-pen-fancy"></i> Annotate</button>
+        <button class="tool-btn" id="btn-fill-form" disabled><i class="fas fa-wpforms"></i> Fill Form</button>
+        <div class="tool-sep"></div>
+        <button class="tool-btn" id="btn-watermark"><i class="fas fa-stamp"></i> Watermark All</button>
+        <div class="tool-sep"></div>
+        <button class="tool-btn danger" id="btn-remove" disabled><i class="fas fa-trash-alt"></i> Remove</button>
+    </div>
+
+    <div class="page-grid" id="page-grid"></div>
+
+    <div class="progress-wrap" id="main-progress">
+        <div class="progress-bar"><div class="progress-fill" id="main-progress-fill"></div></div>
+        <div class="progress-text" id="main-progress-text">Processing...</div>
+    </div>
+</div>
+
+<!-- ==================== CROP MODAL ==================== -->
+<div class="modal-overlay" id="modal-crop">
+    <div class="modal modal-lg">
+        <div class="ph">
+            <i class="fas fa-crop-alt"></i> Crop Page
+            <button class="modal-close" id="crop-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div class="crop-container" id="crop-container">
+                <canvas id="crop-canvas"></canvas>
+                <div class="crop-box" id="crop-box">
+                    <div class="crop-handle tl" data-h="tl"></div>
+                    <div class="crop-handle tr" data-h="tr"></div>
+                    <div class="crop-handle bl" data-h="bl"></div>
+                    <div class="crop-handle br" data-h="br"></div>
+                </div>
+            </div>
+            <div class="crop-info">
+                <span class="crop-dim" id="crop-dim">0 × 0</span>
+            </div>
+            <div class="toolbar" style="margin-top:16px">
+                <button class="tool-btn primary" id="btn-crop-apply"><i class="fas fa-check"></i> Apply Crop</button>
+                <button class="tool-btn" id="btn-crop-reset"><i class="fas fa-undo"></i> Reset</button>
+                <button class="tool-btn" id="btn-crop-remove" style="display:none"><i class="fas fa-expand"></i> Remove Crop</button>
+                <div class="tool-sep"></div>
+                <button class="tool-btn" id="btn-crop-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== ANNOTATE MODAL ==================== -->
+<div class="modal-overlay" id="modal-annotate">
+    <div class="modal modal-lg">
+        <div class="ph">
+            <i class="fas fa-pen-fancy"></i> Annotate Page
+            <button class="modal-close" id="anno-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb" style="padding:0">
+            <div class="annotate-toolbar">
+                <button class="anno-btn on" data-tool="draw"><i class="fas fa-pencil-alt"></i> Draw</button>
+                <button class="anno-btn" data-tool="highlight"><i class="fas fa-highlighter"></i> Highlight</button>
+                <button class="anno-btn" data-tool="text"><i class="fas fa-font"></i> Text</button>
+                <button class="anno-btn" data-tool="eraser"><i class="fas fa-eraser"></i> Eraser</button>
+                <div class="anno-sep"></div>
+                <div class="cpw" style="padding:4px 8px">
+                    <input type="color" id="anno-color" value="#e17055" style="width:26px;height:26px">
+                </div>
+                <select id="anno-size" style="width:70px;padding:6px 8px;font-size:12px">
+                    <option value="2">Thin</option>
+                    <option value="4" selected>Medium</option>
+                    <option value="8">Thick</option>
+                    <option value="16">Bold</option>
+                </select>
+                <div class="anno-sep"></div>
+                <button class="anno-btn" id="btn-anno-undo"><i class="fas fa-undo"></i></button>
+                <button class="anno-btn" id="btn-anno-clear"><i class="fas fa-trash-alt"></i></button>
+            </div>
+            <div class="annotate-canvas-wrap" id="anno-canvas-wrap">
+                <div class="anno-layer" id="anno-layer">
+                    <canvas id="anno-canvas"></canvas>
+                    <div class="anno-text-layer" id="anno-text-layer"></div>
+                </div>
+            </div>
+            <div class="toolbar" style="margin-top:0;border-top:1px solid var(--brd);border-radius:0;padding:12px 16px">
+                <button class="tool-btn primary" id="btn-anno-apply"><i class="fas fa-check"></i> Apply Annotations</button>
+                <button class="tool-btn" id="btn-anno-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== FORM FILL MODAL ==================== -->
+<div class="modal-overlay" id="modal-form">
+    <div class="modal modal-xl">
+        <div class="ph">
+            <i class="fas fa-wpforms"></i> Fill Form
+            <span class="form-page-info" id="form-page-info"></span>
+            <button class="modal-close" id="form-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb" style="padding:0">
+            <div class="form-container" id="form-container">
+                <div class="form-canvas-wrap" id="form-canvas-wrap">
+                    <canvas id="form-canvas"></canvas>
+                    <div class="form-fields-layer" id="form-fields-layer"></div>
+                </div>
+            </div>
+            <div class="form-nav">
+                <button class="page-nav-btn" id="form-prev"><i class="fas fa-chevron-left"></i></button>
+                <span class="page-nav-info"><span id="form-page-num">1</span> / <span id="form-page-total">1</span></span>
+                <button class="page-nav-btn" id="form-next"><i class="fas fa-chevron-right"></i></button>
+            </div>
+            <div class="toolbar" style="margin-top:0;border-top:1px solid var(--brd);border-radius:0;padding:12px 16px">
+                <button class="tool-btn primary" id="btn-form-apply"><i class="fas fa-check"></i> Apply &amp; Close</button>
+                <button class="tool-btn" id="btn-form-reset"><i class="fas fa-undo"></i> Reset All</button>
+                <div class="tool-sep"></div>
+                <button class="tool-btn" id="btn-form-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== WATERMARK MODAL ==================== -->
+<div class="modal-overlay" id="modal-watermark">
+    <div class="modal">
+        <div class="ph">
+            <i class="fas fa-stamp"></i> Watermark All Pages
+            <button class="modal-close" id="wm-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div class="fg">
+                <label>Watermark Text</label>
+                <input type="text" id="wm-text" placeholder="CONFIDENTIAL" value="CONFIDENTIAL">
+            </div>
+            <div class="cr">
+                <div class="fg">
+                    <label>Font Size</label>
+                    <input type="range" id="wm-size" min="12" max="120" value="60">
+                    <div class="rl"><span>12px</span><span id="wm-size-val">60px</span><span>120px</span></div>
+                </div>
+                <div class="fg">
+                    <label>Rotation</label>
+                    <input type="range" id="wm-rotation" min="-90" max="90" value="-45">
+                    <div class="rl"><span>-90°</span><span id="wm-rot-val">-45°</span><span>90°</span></div>
+                </div>
+            </div>
+            <div class="cr" style="margin-top:14px">
+                <div class="fg">
+                    <label>Color</label>
+                    <div class="cpw">
+                        <input type="color" id="wm-color" value="#6c5ce7">
+                        <span id="wm-color-hex">#6c5ce7</span>
+                    </div>
+                </div>
+                <div class="fg">
+                    <label>Opacity</label>
+                    <input type="range" id="wm-opacity" min="5" max="100" value="20">
+                    <div class="rl"><span>5%</span><span id="wm-opacity-val">20%</span><span>100%</span></div>
+                </div>
+            </div>
+            <div class="toolbar" style="margin-top:20px">
+                <button class="tool-btn primary" id="btn-wm-apply"><i class="fas fa-stamp"></i> Apply Watermark</button>
+                <button class="tool-btn" id="btn-wm-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"><i class="fas fa-check-circle"></i> <span id="toast-msg"></span></div>
+
+<footer>
+    <p>Made with <i class="fas fa-heart" style="color:var(--ac2)"></i> by <a href="https://genius-space.org" target="_blank">Genius Space</a> · 100% client-side · No data leaves your browser</p>
+</footer>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+</script>
+<script src="app.js"></script>
+</body>
+</html>
