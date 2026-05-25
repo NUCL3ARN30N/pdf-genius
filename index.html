@@ -29,7 +29,7 @@
 
 <header>
     <a class="logo" href="/">
-        <div class="logo-icon"><i class="fa-solid fa-file-pdf"></i></div>
+        <div class="logo-icon"><img src="favicon.svg" alt="PDF Genius" width="44" height="44"></div>
         <div class="logo-text">
             <span class="p1">PDF</span>
             <span class="p2">Genius</span>
@@ -140,33 +140,40 @@
         </div>
         <div class="pb" style="padding:0">
             <div class="annotate-toolbar">
-                <button class="anno-btn on" data-tool="draw"><i class="fas fa-pencil-alt"></i> Draw</button>
-                <button class="anno-btn" data-tool="highlight"><i class="fas fa-highlighter"></i> Highlight</button>
-                <button class="anno-btn" data-tool="text"><i class="fas fa-font"></i> Text</button>
-                <button class="anno-btn" data-tool="eraser"><i class="fas fa-eraser"></i> Eraser</button>
-                <button class="anno-btn" data-tool="pan"><i class="fas fa-hand-paper"></i> Pan</button>
-                <div class="anno-sep"></div>
-                <div class="cpw" style="padding:4px 8px">
-                    <input type="color" id="anno-color" value="#e17055" style="width:26px;height:26px">
+                <div class="anno-tools-row">
+                    <button class="anno-btn" data-tool="draw"><i class="fas fa-pencil-alt"></i> <span class="anno-label">Draw</span></button>
+                    <button class="anno-btn" data-tool="highlight"><i class="fas fa-highlighter"></i> <span class="anno-label">Highlight</span></button>
+                    <button class="anno-btn" data-tool="text"><i class="fas fa-font"></i> <span class="anno-label">Text</span></button>
+                    <button class="anno-btn" data-tool="eraser"><i class="fas fa-eraser"></i> <span class="anno-label">Eraser</span></button>
+                    <button class="anno-btn on" data-tool="pan"><i class="fas fa-hand-paper"></i> <span class="anno-label">Pan</span></button>
+                    <div class="anno-sep"></div>
+                    <button class="anno-btn" id="btn-anno-zoom-out" title="Zoom out"><i class="fas fa-search-minus"></i></button>
+                    <span class="anno-zoom-level" id="anno-zoom-level">100%</span>
+                    <button class="anno-btn" id="btn-anno-zoom-in" title="Zoom in"><i class="fas fa-search-plus"></i></button>
+                    <div class="anno-sep"></div>
+                    <button class="anno-btn" id="btn-anno-undo"><i class="fas fa-undo"></i></button>
+                    <button class="anno-btn" id="btn-anno-clear"><i class="fas fa-trash-alt"></i></button>
                 </div>
-                <select id="anno-size" style="width:70px;padding:6px 8px;font-size:12px">
-                    <option value="2">Thin</option>
-                    <option value="4" selected>Medium</option>
-                    <option value="8">Thick</option>
-                    <option value="16">Bold</option>
-                </select>
-                <select id="anno-font" style="width:120px;padding:6px 8px;font-size:12px">
-                    <option value="DM Sans" style="font-family:'DM Sans'">DM Sans</option>
-                    <option value="Helvetica" style="font-family:Helvetica,Arial">Helvetica</option>
-                    <option value="Times New Roman" style="font-family:'Times New Roman',serif">Times</option>
-                    <option value="Courier New" style="font-family:'Courier New',monospace">Courier</option>
-                    <option value="Playfair Display" style="font-family:'Playfair Display',serif">Playfair</option>
-                    <option value="JetBrains Mono" style="font-family:'JetBrains Mono',monospace">JetBrains</option>
-                    <option value="Georgia" style="font-family:Georgia,serif">Georgia</option>
-                </select>
-                <div class="anno-sep"></div>
-                <button class="anno-btn" id="btn-anno-undo"><i class="fas fa-undo"></i></button>
-                <button class="anno-btn" id="btn-anno-clear"><i class="fas fa-trash-alt"></i></button>
+                <div class="anno-opts-row">
+                    <div class="cpw" style="padding:4px 8px">
+                        <input type="color" id="anno-color" value="#e17055" style="width:26px;height:26px">
+                    </div>
+                    <select id="anno-size" style="width:70px;padding:6px 8px;font-size:12px">
+                        <option value="2">Thin</option>
+                        <option value="4" selected>Medium</option>
+                        <option value="8">Thick</option>
+                        <option value="16">Bold</option>
+                    </select>
+                    <select id="anno-font" style="width:120px;padding:6px 8px;font-size:12px">
+                        <option value="DM Sans">DM Sans</option>
+                        <option value="Helvetica">Helvetica</option>
+                        <option value="Times New Roman">Times</option>
+                        <option value="Courier New">Courier</option>
+                        <option value="Playfair Display">Playfair</option>
+                        <option value="JetBrains Mono">JetBrains</option>
+                        <option value="Georgia">Georgia</option>
+                    </select>
+                </div>
             </div>
             <div class="annotate-canvas-wrap" id="anno-canvas-wrap">
                 <div class="anno-layer" id="anno-layer">
@@ -261,7 +268,7 @@
 <!-- iOS Install Banner -->
 <div class="ios-install-banner" id="ios-install-banner">
     <div class="ios-install-content">
-        <div class="ios-install-icon"><i class="fa-solid fa-file-pdf"></i></div>
+        <div class="ios-install-icon"><img src="favicon.svg" alt="PDF Genius" width="44" height="44"></div>
         <div class="ios-install-text">
             <strong>Install PDF Genius</strong>
             <span>Tap <i class="fas fa-share-from-square"></i> then <strong>"Add to Home Screen"</strong></span>

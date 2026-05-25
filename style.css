@@ -60,12 +60,12 @@ header {
 .logo { display:flex; align-items:center; gap:16px; text-decoration:none; }
 .logo-icon {
     width:44px; height:44px;
-    background:linear-gradient(135deg,var(--ac),var(--ac2));
-    border-radius:10px; display:grid; place-items:center;
-    font-size:18px; color:#fff;
+    border-radius:10px; overflow:hidden;
+    flex-shrink:0;
     box-shadow:0 4px 20px rgba(108,92,231,.35);
     transition:transform .3s,box-shadow .3s;
 }
+.logo-icon img { width:100%; height:100%; display:block; }
 .logo:hover .logo-icon { transform:rotate(-6deg) scale(1.05); box-shadow:0 6px 28px rgba(108,92,231,.5); }
 
 .logo-text { display:flex; align-items:baseline; gap:6px; }
@@ -299,31 +299,41 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ===================== ANNOTATE MODAL ===================== */
 .annotate-toolbar {
-    display:flex; gap:6px; padding:12px 16px;
-    border-bottom:1px solid var(--brd); flex-wrap:wrap; align-items:center;
-    background:var(--bg2);
+    border-bottom:1px solid var(--brd); background:var(--bg2);
 }
+.anno-tools-row, .anno-opts-row {
+    display:flex; gap:6px; padding:10px 16px; flex-wrap:wrap; align-items:center;
+}
+.anno-opts-row { padding-top:0; }
 .anno-btn {
     padding:8px 12px; border:1px solid var(--brd); border-radius:var(--r1);
     background:var(--inp); color:var(--t2); font-family:inherit;
     font-size:12px; font-weight:500; cursor:pointer; transition:all var(--tr);
     display:flex; align-items:center; gap:5px;
+    -webkit-tap-highlight-color:transparent;
 }
 .anno-btn:hover { background:var(--hov); border-color:var(--t3); color:var(--t1); }
+.anno-btn:active { background:var(--hov); transform:scale(.95); }
 .anno-btn.on { background:var(--acg); border-color:var(--ac); color:var(--acl); }
-.anno-sep { width:1px; height:24px; background:var(--brd); margin:0 4px; }
+.anno-sep { width:1px; height:24px; background:var(--brd); margin:0 4px; flex-shrink:0; }
+.anno-zoom-level {
+    font-size:11px; font-family:'JetBrains Mono',monospace;
+    color:var(--t3); min-width:36px; text-align:center; user-select:none;
+}
 .annotate-canvas-wrap {
-    position:relative; display:flex; align-items:flex-start; justify-content:center;
+    position:relative; display:flex; align-items:flex-start; justify-content:flex-start;
     padding:16px; min-height:300px; overflow:auto; background:var(--bg);
     -webkit-overflow-scrolling:touch; touch-action:none;
     max-height:calc(100vh - 220px);
 }
-.annotate-canvas-wrap canvas { box-shadow:var(--sh); max-width:100%; height:auto; }
+.annotate-canvas-wrap canvas { box-shadow:var(--sh); display:block; }
 .annotate-canvas-wrap.pan-mode { touch-action:auto; cursor:grab; }
 .annotate-canvas-wrap.pan-mode canvas { cursor:grab; }
 
+/* When canvas fits viewport, center it */
+.anno-layer { position:relative; display:inline-block; flex-shrink:0; margin:0 auto; }
+
 /* Annotation layer: canvas + overlays stacked */
-.anno-layer { position:relative; display:inline-block; }
 .anno-text-layer {
     position:absolute; inset:0; pointer-events:none; overflow:visible;
 }
@@ -461,11 +471,10 @@ footer a:hover { text-decoration:underline; }
 }
 .ios-install-icon {
     width:44px; height:44px; flex-shrink:0;
-    background:linear-gradient(135deg,var(--ac),var(--ac2));
-    border-radius:10px; display:grid; place-items:center;
-    font-size:18px; color:#fff;
+    border-radius:10px; overflow:hidden;
     box-shadow:0 4px 16px rgba(108,92,231,.3);
 }
+.ios-install-icon img { width:100%; height:100%; display:block; }
 .ios-install-text {
     flex:1; display:flex; flex-direction:column; gap:3px;
     font-size:13.5px; color:var(--t1);
@@ -543,6 +552,8 @@ footer a:hover { text-decoration:underline; }
 }
 
 /* ===================== RESPONSIVE ===================== */
+
+/* Tablet */
 @media(max-width:960px) {
     .app { padding:16px 16px 60px; }
     header { padding:16px 20px; }
@@ -555,24 +566,77 @@ footer a:hover { text-decoration:underline; }
         padding:12px 20px; font-size:14px; border-radius:50px;
         box-shadow:0 4px 20px rgba(0,0,0,.4);
     }
+    /* Show page actions always on touch (no hover) */
+    .page-thumb .page-actions { opacity:1; }
+    .page-act { width:32px; height:32px; font-size:13px; }
 }
 
+/* Phone */
 @media(max-width:600px) {
-    .toolbar { gap:6px; padding:10px 12px; }
-    .tool-btn { padding:7px 10px; font-size:11.5px; }
+    /* General layout */
+    .app { padding:10px 10px 60px; }
+    header { padding:12px 14px; gap:10px; }
+    .logo-icon { width:36px; height:36px; border-radius:8px; }
+    .logo-text .p1, .logo-text .p2 { font-size:20px; }
+
+    /* Main toolbar — icon-only with large touch targets */
+    .toolbar { gap:4px; padding:8px 10px; }
+    .tool-btn { padding:10px 12px; font-size:0; gap:0; min-width:40px; min-height:40px; justify-content:center; border-radius:10px; }
+    .tool-btn i { font-size:16px; }
+    .tool-btn.primary { font-size:13px; } /* keep label on primary */
+    .tool-btn.primary i { font-size:14px; margin-right:4px; }
     .tool-sep { width:100%; height:1px; margin:2px 0; }
-    .logo-text .p1, .logo-text .p2 { font-size:22px; }
-    .cr { grid-template-columns:1fr; }
-    .annotate-toolbar { gap:3px; padding:6px 8px; }
-    .annotate-toolbar .anno-sep { margin:0 2px; height:20px; }
-    .anno-btn { padding:6px 8px; font-size:0; gap:0; min-width:32px; justify-content:center; }
-    .anno-btn i { font-size:14px; }
-    .annotate-toolbar select { width:55px !important; font-size:11px !important; padding:5px 4px !important; }
-    .annotate-toolbar .cpw { padding:2px 4px !important; }
-    .annotate-toolbar .cpw input[type="color"] { width:22px !important; height:22px !important; }
-    .annotate-canvas-wrap { padding:8px; max-height:calc(100vh - 200px); }
-    .modal.modal-lg { max-height:100vh; border-radius:0; }
+
+    /* Top bar */
+    .top-bar { padding:10px 12px; gap:8px; }
+    .top-stat { font-size:11px; }
+
+    /* Upload zone — bigger tap target */
+    .upload-zone { padding:48px 16px; }
+    .upload-zone i { font-size:36px; }
+    .upload-title { font-size:14px; }
+
+    /* Page grid */
     .page-grid { grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); gap:8px; }
-    .page-actions { gap:3px; }
-    .page-act { width:24px; height:24px; font-size:10px; }
+    .page-thumb .page-actions { opacity:1; bottom:28px; gap:3px; }
+    .page-act { width:30px; height:30px; font-size:12px; border-radius:8px; }
+    .page-num { font-size:9px; padding:4px 6px; }
+    .page-source { font-size:8px; padding:2px 5px; }
+    .page-check { width:28px; height:28px; font-size:12px; }
+
+    /* Modals — fullscreen on phone */
+    .modal { max-width:100%; width:100%; max-height:100vh; height:100vh; border-radius:0; }
+    .modal.modal-lg { max-width:100%; height:100vh; }
+    .modal.modal-xl { max-width:100%; height:100vh; }
+    .modal-overlay { align-items:stretch; }
+
+    /* Annotate toolbar — icon-only, big targets */
+    .anno-tools-row, .anno-opts-row { padding:8px 10px; gap:4px; }
+    .anno-btn { padding:10px; font-size:0; gap:0; min-width:40px; min-height:40px; justify-content:center; border-radius:10px; }
+    .anno-btn i { font-size:16px; }
+    .anno-label { display:none; }
+    .anno-sep { margin:0 2px; height:28px; }
+    .anno-zoom-level { font-size:10px; min-width:32px; }
+    .anno-opts-row select { width:65px !important; font-size:12px !important; padding:8px 6px !important; min-height:40px; border-radius:10px; }
+    .anno-opts-row .cpw { padding:4px 6px !important; border-radius:10px; min-height:40px; display:flex; align-items:center; }
+    .anno-opts-row .cpw input[type="color"] { width:28px !important; height:28px !important; }
+
+    /* Annotate canvas */
+    .annotate-canvas-wrap { padding:4px; max-height:calc(100vh - 240px); }
+
+    /* Bottom toolbar in annotate */
+    .modal .toolbar { padding:10px 12px; }
+    .modal .toolbar .tool-btn { font-size:12px; padding:12px 16px; min-height:44px; }
+
+    /* Crop modal */
+    .crop-container { padding:8px; }
+    .crop-info { font-size:11px; }
+
+    /* Form groups */
+    .cr { grid-template-columns:1fr; }
+    .fg label { font-size:13px; }
+    input[type="text"], input[type="number"], select, textarea { padding:12px 14px; font-size:14px; min-height:44px; }
+
+    /* Footer */
+    footer { padding:20px 16px; font-size:11px; }
 }

@@ -689,16 +689,66 @@ async function openAnnotate(idx) {
 
     openModal('modal-annotate');
 
-    // Reset tool
+    // Reset tool to pan (default)
     document.querySelectorAll('.anno-btn[data-tool]').forEach(b => b.classList.remove('on'));
-    document.querySelector('.anno-btn[data-tool="draw"]').classList.add('on');
-    annoState.tool = 'draw';
-    canvas.style.cursor = 'crosshair';
-    // Default: block touch scroll on canvas (draw mode)
+    document.querySelector('.anno-btn[data-tool="pan"]').classList.add('on');
+    annoState.tool = 'pan';
+    canvas.style.cursor = 'grab';
+    // Default: allow touch scroll on canvas (pan mode)
     const wrapEl = document.getElementById('anno-canvas-wrap');
-    wrapEl.style.touchAction = 'none';
-    wrapEl.classList.remove('pan-mode');
+    wrapEl.style.touchAction = 'auto';
+    wrapEl.classList.add('pan-mode');
+    // Update zoom display
+    updateZoomDisplay();
 }
+
+function updateZoomDisplay() {
+    document.getElementById('anno-zoom-level').textContent = Math.round(annoState.scale * 100) + '%';
+}
+
+async function reRenderAnnotateAtScale() {
+    if (annoState.idx < 0 || !annoState.pdfDoc) return;
+    const pg = state.pages[annoState.idx];
+    const srcData = pg.data || pg.srcFile;
+    const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+
+    const page = await annoState.pdfDoc.getPage(srcIdx + 1);
+    const vp = page.getViewport({ scale: annoState.scale });
+    const canvas = document.getElementById('anno-canvas');
+    canvas.width = vp.width; canvas.height = vp.height;
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+    annoState.baseImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    pg.annotations.filter(a => a.type === 'draw').forEach(a => drawAnno(ctx, a));
+    rebuildOverlayLayer();
+    updateZoomDisplay();
+
+    // If canvas is wider than the wrap, auto-switch to pan so user can scroll
+    const wrap = document.getElementById('anno-canvas-wrap');
+    if (canvas.width > wrap.clientWidth || canvas.height > wrap.clientHeight) {
+        // Auto-activate pan if on a touch device
+        if ('ontouchstart' in window) {
+            annoState.tool = 'pan';
+            document.querySelectorAll('.anno-btn[data-tool]').forEach(b => b.classList.remove('on'));
+            const panBtn = document.querySelector('.anno-btn[data-tool="pan"]');
+            if (panBtn) panBtn.classList.add('on');
+            wrap.style.touchAction = 'auto';
+            wrap.classList.add('pan-mode');
+            canvas.style.cursor = 'grab';
+        }
+    }
+}
+
+document.getElementById('btn-anno-zoom-in').addEventListener('click', () => {
+    annoState.scale = Math.min(3, +(annoState.scale + 0.25).toFixed(2));
+    reRenderAnnotateAtScale();
+});
+
+document.getElementById('btn-anno-zoom-out').addEventListener('click', () => {
+    annoState.scale = Math.max(0.25, +(annoState.scale - 0.25).toFixed(2));
+    reRenderAnnotateAtScale();
+});
 
 // Font mapping: CSS font → pdf-lib StandardFont
 const FONT_MAP = {
