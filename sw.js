@@ -1,5 +1,5 @@
-const CACHE = 'pdf-genius-v1';
-const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/favicon.svg'];
+const CACHE = 'pdf-genius-v2';
+const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.json'];
 
 self.addEventListener('install', e => {
     e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
