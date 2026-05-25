@@ -657,11 +657,14 @@ async function openAnnotate(idx) {
     // Cache the base PDF render as an ImageData for fast redraws
     annoState.baseImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-    // Draw existing stroke/highlight annotations on canvas
-    pg.annotations.filter(a => a.type !== 'text').forEach(a => drawAnno(ctx, a));
+    // Draw existing stroke annotations on canvas (highlights are DOM overlays now)
+    pg.annotations.filter(a => a.type === 'draw').forEach(a => drawAnno(ctx, a));
 
-    // Build text overlay DOM nodes for text annotations
-    rebuildTextLayer();
+    // Build overlay DOM nodes for text and highlight annotations
+    rebuildOverlayLayer();
+
+    // Clear undo stack for fresh session
+    undoStack.length = 0;
 
     openModal('modal-annotate');
 
@@ -672,6 +675,17 @@ async function openAnnotate(idx) {
     canvas.style.cursor = 'crosshair';
 }
 
+// Font mapping: CSS font → pdf-lib StandardFont
+const FONT_MAP = {
+    'DM Sans': StandardFonts.Helvetica,
+    'Helvetica': StandardFonts.Helvetica,
+    'Times New Roman': StandardFonts.TimesRoman,
+    'Courier New': StandardFonts.Courier,
+    'Playfair Display': StandardFonts.TimesRoman, // closest match
+    'JetBrains Mono': StandardFonts.Courier,
+    'Georgia': StandardFonts.TimesRoman,
+};
+
 function drawAnno(ctx, a) {
     ctx.save();
     if (a.type === 'draw') {
@@ -680,31 +694,22 @@ function drawAnno(ctx, a) {
         ctx.beginPath();
         a.points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
         ctx.stroke();
-    } else if (a.type === 'highlight' && a.points && a.points.length > 1) {
-        ctx.fillStyle = a.color; ctx.globalAlpha = 0.3;
-        const minX = Math.min(...a.points.map(p => p.x));
-        const maxX = Math.max(...a.points.map(p => p.x));
-        const minY = Math.min(...a.points.map(p => p.y));
-        const maxY = Math.max(...a.points.map(p => p.y));
-        ctx.fillRect(minX, minY, maxX - minX, (maxY - minY) + a.size * 3);
     }
+    // highlights and text are DOM overlays — not drawn on canvas
     ctx.restore();
 }
 
 function redrawAnnoCanvas() {
     const canvas = document.getElementById('anno-canvas');
     const ctx = canvas.getContext('2d');
-    // Fast restore from cached base image
-    if (annoState.baseImage) {
-        ctx.putImageData(annoState.baseImage, 0, 0);
-    }
+    if (annoState.baseImage) ctx.putImageData(annoState.baseImage, 0, 0);
     const pg = state.pages[annoState.idx];
-    pg.annotations.filter(a => a.type !== 'text').forEach(a => drawAnno(ctx, a));
+    pg.annotations.filter(a => a.type === 'draw').forEach(a => drawAnno(ctx, a));
 }
 
-// ===================== TEXT ANNOTATION LAYER =====================
+// ===================== OVERLAY LAYER (TEXT + HIGHLIGHTS) =====================
 
-function rebuildTextLayer() {
+function rebuildOverlayLayer() {
     const layer = document.getElementById('anno-text-layer');
     layer.innerHTML = '';
     const pg = state.pages[annoState.idx];
@@ -713,64 +718,149 @@ function rebuildTextLayer() {
     const scaleY = canvas.offsetHeight / canvas.height;
 
     pg.annotations.forEach((a, i) => {
-        if (a.type !== 'text') return;
-        createTextNode(a, i, scaleX, scaleY);
+        if (a.type === 'text') createTextNode(a, i, scaleX, scaleY);
+        else if (a.type === 'highlight') createHighlightNode(a, i, scaleX, scaleY);
     });
+}
+// Keep old name as alias
+const rebuildTextLayer = rebuildOverlayLayer;
+
+// ===================== TEXT NODES =====================
+
+function hasUnconfirmedText() {
+    const pg = state.pages[annoState.idx];
+    return pg.annotations.some(a => a.type === 'text' && !a.confirmed);
 }
 
 function createTextNode(a, annoIdx, scaleX, scaleY) {
     const layer = document.getElementById('anno-text-layer');
+    const wrap = document.createElement('div');
+    wrap.style.position = 'absolute';
+    wrap.style.left = (a.x * scaleX) + 'px';
+    wrap.style.top = ((a.y - a.size * 4) * scaleY) + 'px';
+    wrap.style.zIndex = '5';
+
     const node = document.createElement('div');
-    node.className = 'anno-text-node';
-    node.contentEditable = 'true';
+    node.className = 'anno-text-node' + (a.confirmed ? ' confirmed' : ' unconfirmed');
+    node.contentEditable = a.confirmed ? 'false' : 'true';
     node.textContent = a.text;
-    node.style.left = (a.x * scaleX) + 'px';
-    node.style.top = ((a.y - a.size * 4) * scaleY) + 'px';
     node.style.fontSize = (a.size * 4 * scaleX) + 'px';
     node.style.color = a.color;
+    node.style.fontFamily = `'${a.fontFamily || 'DM Sans'}', sans-serif`;
     node.dataset.annoIdx = annoIdx;
 
-    // Drag to move
-    let dragging = false, dragStartX, dragStartY, origLeft, origTop;
+    // Action buttons (only shown when unconfirmed)
+    const actions = document.createElement('div');
+    actions.className = 'anno-text-actions';
+    actions.style.display = a.confirmed ? 'none' : 'flex';
 
-    node.addEventListener('mousedown', e => {
-        if (node.classList.contains('editing')) return; // don't drag while editing
-        if (annoState.tool !== 'text' && annoState.tool !== 'eraser') return;
-        dragging = true;
-        node.classList.add('dragging');
-        dragStartX = e.clientX; dragStartY = e.clientY;
-        origLeft = parseFloat(node.style.left); origTop = parseFloat(node.style.top);
+    const btnConfirm = document.createElement('button');
+    btnConfirm.className = 'anno-text-act act-confirm';
+    btnConfirm.innerHTML = '<i class="fas fa-check"></i>';
+    btnConfirm.title = 'Confirm (Enter)';
+
+    const btnDrag = document.createElement('button');
+    btnDrag.className = 'anno-text-act act-drag';
+    btnDrag.innerHTML = '<i class="fas fa-arrows-alt"></i>';
+    btnDrag.title = 'Drag to move';
+
+    const btnRemove = document.createElement('button');
+    btnRemove.className = 'anno-text-act act-remove';
+    btnRemove.innerHTML = '<i class="fas fa-times"></i>';
+    btnRemove.title = 'Remove';
+
+    actions.appendChild(btnConfirm);
+    actions.appendChild(btnDrag);
+    actions.appendChild(btnRemove);
+
+    wrap.appendChild(actions);
+    wrap.appendChild(node);
+
+    // Confirm
+    function confirmText() {
+        a.text = node.textContent || '';
+        if (!a.text.trim()) {
+            removeThis(); return;
+        }
+        pushUndo();
+        a.confirmed = true;
+        node.classList.remove('unconfirmed', 'editing');
+        node.classList.add('confirmed');
+        node.contentEditable = 'false';
+        actions.style.display = 'none';
+    }
+
+    // Remove
+    function removeThis() {
+        pushUndo();
+        const pg = state.pages[annoState.idx];
+        const idx = pg.annotations.indexOf(a);
+        if (idx >= 0) pg.annotations.splice(idx, 1);
+        rebuildOverlayLayer();
+        redrawAnnoCanvas();
+    }
+
+    btnConfirm.addEventListener('click', e => { e.stopPropagation(); confirmText(); });
+    btnRemove.addEventListener('click', e => { e.stopPropagation(); removeThis(); });
+
+    // Drag via button
+    function startDrag(e) {
         e.preventDefault();
+        e.stopPropagation();
+        pushUndo();
+        node.classList.remove('editing');
+        node.classList.add('dragging');
+        const startX = e.clientX, startY = e.clientY;
+        const origLeft = parseFloat(wrap.style.left), origTop = parseFloat(wrap.style.top);
 
         const onMove = e2 => {
-            if (!dragging) return;
-            const dx = e2.clientX - dragStartX, dy = e2.clientY - dragStartY;
-            node.style.left = (origLeft + dx) + 'px';
-            node.style.top = (origTop + dy) + 'px';
+            wrap.style.left = (origLeft + e2.clientX - startX) + 'px';
+            wrap.style.top = (origTop + e2.clientY - startY) + 'px';
         };
         const onUp = () => {
-            if (!dragging) return;
-            dragging = false;
             node.classList.remove('dragging');
-            // Update annotation position
             const canvas = document.getElementById('anno-canvas');
             const sx = canvas.width / canvas.offsetWidth;
             const sy = canvas.height / canvas.offsetHeight;
-            a.x = parseFloat(node.style.left) * sx;
-            a.y = (parseFloat(node.style.top) * sy) + a.size * 4;
+            a.x = parseFloat(wrap.style.left) * sx;
+            a.y = (parseFloat(wrap.style.top) * sy) + a.size * 4;
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
         };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
+    }
+    btnDrag.addEventListener('mousedown', startDrag);
+
+    // Also allow drag from the node itself when unconfirmed + not editing
+    node.addEventListener('mousedown', e => {
+        if (node.classList.contains('editing')) return;
+        if (a.confirmed && annoState.tool !== 'eraser') return;
+        if (!a.confirmed) {
+            // Start drag from the text body
+            startDrag(e);
+        }
     });
 
-    // Click to edit text
+    // Double-click to re-edit confirmed text
     node.addEventListener('dblclick', e => {
         e.stopPropagation();
-        node.classList.add('editing');
+        if (hasUnconfirmedText()) {
+            toast('Confirm or remove the current text before editing another');
+            return;
+        }
+        a.confirmed = false;
+        node.classList.remove('confirmed');
+        node.classList.add('unconfirmed', 'editing');
+        node.contentEditable = 'true';
+        actions.style.display = 'flex';
+
+        // Sync toolbar to this annotation's properties
+        document.getElementById('anno-color').value = a.color;
+        document.getElementById('anno-size').value = String(a.size);
+        document.getElementById('anno-font').value = a.fontFamily || 'DM Sans';
+
         node.focus();
-        // Select all text
         const range = document.createRange();
         range.selectNodeContents(node);
         const sel = window.getSelection();
@@ -778,44 +868,183 @@ function createTextNode(a, annoIdx, scaleX, scaleY) {
         sel.addRange(range);
     });
 
-    // Single click in text mode → edit
+    // Click in text mode → start editing
     node.addEventListener('click', e => {
-        if (annoState.tool === 'text') {
+        if (annoState.tool === 'eraser') {
+            e.stopPropagation(); removeThis(); return;
+        }
+        if (!a.confirmed && annoState.tool === 'text') {
             e.stopPropagation();
             node.classList.add('editing');
             node.focus();
-        } else if (annoState.tool === 'eraser') {
-            // Click to delete
-            e.stopPropagation();
-            const pg = state.pages[annoState.idx];
-            const idx = parseInt(node.dataset.annoIdx);
-            pg.annotations.splice(idx, 1);
-            rebuildTextLayer();
         }
     });
 
-    // Save on blur
+    // Keyboard
+    node.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            confirmText();
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            if (a.text === 'Text' && node.textContent === 'Text') removeThis();
+            else confirmText();
+        }
+        // Shift+Enter → newline (default contentEditable behavior, just don't prevent)
+    });
+
+    // Blur → save text but don't auto-confirm
     node.addEventListener('blur', () => {
         node.classList.remove('editing');
         a.text = node.textContent || '';
-        if (!a.text.trim()) {
-            // Remove empty text annotation
-            const pg = state.pages[annoState.idx];
-            const idx = pg.annotations.indexOf(a);
-            if (idx >= 0) pg.annotations.splice(idx, 1);
-            rebuildTextLayer();
-        }
     });
 
-    // Prevent Enter from creating newlines — commit on Enter
-    node.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); node.blur(); }
-        if (e.key === 'Escape') { node.blur(); }
+    layer.appendChild(wrap);
+    return { wrap, node };
+}
+
+// ===================== HIGHLIGHT OVERLAY NODES =====================
+
+function createHighlightNode(a, annoIdx, scaleX, scaleY) {
+    const layer = document.getElementById('anno-text-layer');
+    const canvas = document.getElementById('anno-canvas');
+
+    if (!a.points || a.points.length < 2) return;
+
+    const minX = Math.min(...a.points.map(p => p.x));
+    const maxX = Math.max(...a.points.map(p => p.x));
+    const minY = Math.min(...a.points.map(p => p.y));
+    const maxY = Math.max(...a.points.map(p => p.y));
+    const h = (maxY - minY) + a.size * 3;
+
+    if (!a.rect) a.rect = { x: minX, y: minY, w: maxX - minX, h };
+
+    const node = document.createElement('div');
+    node.className = 'anno-highlight-node';
+    node.style.left = (a.rect.x * scaleX) + 'px';
+    node.style.top = (a.rect.y * scaleY) + 'px';
+    node.style.width = (a.rect.w * scaleX) + 'px';
+    node.style.height = (a.rect.h * scaleY) + 'px';
+    node.style.backgroundColor = a.color;
+    node.style.opacity = '0.3';
+    node.dataset.annoIdx = annoIdx;
+
+    // Delete button
+    const del = document.createElement('button');
+    del.className = 'anno-hl-delete';
+    del.innerHTML = '<i class="fas fa-times"></i>';
+    del.title = 'Remove highlight';
+    del.addEventListener('click', e => {
+        e.stopPropagation();
+        pushUndo();
+        const pg = state.pages[annoState.idx];
+        const idx = pg.annotations.indexOf(a);
+        if (idx >= 0) pg.annotations.splice(idx, 1);
+        rebuildOverlayLayer();
+        redrawAnnoCanvas();
+    });
+    node.appendChild(del);
+
+    // Resize handles
+    ['tl','tr','bl','br'].forEach(corner => {
+        const handle = document.createElement('div');
+        handle.className = 'anno-hl-handle hl-' + corner;
+        handle.addEventListener('mousedown', e => {
+            e.preventDefault(); e.stopPropagation();
+            pushUndo();
+            const startX = e.clientX, startY = e.clientY;
+            const origL = parseFloat(node.style.left), origT = parseFloat(node.style.top);
+            const origW = parseFloat(node.style.width), origH = parseFloat(node.style.height);
+
+            const onMove = e2 => {
+                const dx = e2.clientX - startX, dy = e2.clientY - startY;
+                let nl = origL, nt = origT, nw = origW, nh = origH;
+                if (corner.includes('l')) { nl = origL + dx; nw = origW - dx; }
+                if (corner.includes('r')) { nw = origW + dx; }
+                if (corner.includes('t')) { nt = origT + dy; nh = origH - dy; }
+                if (corner.includes('b')) { nh = origH + dy; }
+                nw = Math.max(10, nw); nh = Math.max(6, nh);
+                node.style.left = nl + 'px'; node.style.top = nt + 'px';
+                node.style.width = nw + 'px'; node.style.height = nh + 'px';
+            };
+            const onUp = () => {
+                const sx = canvas.width / canvas.offsetWidth;
+                const sy = canvas.height / canvas.offsetHeight;
+                a.rect.x = parseFloat(node.style.left) * sx;
+                a.rect.y = parseFloat(node.style.top) * sy;
+                a.rect.w = parseFloat(node.style.width) * sx;
+                a.rect.h = parseFloat(node.style.height) * sy;
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+        node.appendChild(handle);
+    });
+
+    // Drag to reposition
+    node.addEventListener('mousedown', e => {
+        if (e.target !== node) return; // don't drag from buttons/handles
+        pushUndo();
+        node.classList.add('dragging');
+        const startX = e.clientX, startY = e.clientY;
+        const origLeft = parseFloat(node.style.left), origTop = parseFloat(node.style.top);
+        e.preventDefault();
+
+        const onMove = e2 => {
+            node.style.left = (origLeft + e2.clientX - startX) + 'px';
+            node.style.top = (origTop + e2.clientY - startY) + 'px';
+        };
+        const onUp = () => {
+            node.classList.remove('dragging');
+            const sx = canvas.width / canvas.offsetWidth;
+            const sy = canvas.height / canvas.offsetHeight;
+            a.rect.x = parseFloat(node.style.left) * sx;
+            a.rect.y = parseFloat(node.style.top) * sy;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
     });
 
     layer.appendChild(node);
-    return node;
 }
+
+// ===================== UNDO STACK (Ctrl+Z) =====================
+
+const undoStack = []; // snapshots of annotations array (deep copies)
+const MAX_UNDO = 50;
+
+function pushUndo() {
+    if (annoState.idx < 0) return;
+    const pg = state.pages[annoState.idx];
+    const snapshot = JSON.parse(JSON.stringify(pg.annotations));
+    undoStack.push({ idx: annoState.idx, annotations: snapshot });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+
+function performUndo() {
+    if (!undoStack.length) { toast('Nothing to undo'); return; }
+    const entry = undoStack.pop();
+    state.pages[entry.idx].annotations = entry.annotations;
+    if (annoState.idx === entry.idx) {
+        redrawAnnoCanvas();
+        rebuildOverlayLayer();
+    }
+}
+
+document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        // Only when annotate modal is open
+        if (activeModal === 'modal-annotate') {
+            e.preventDefault();
+            performUndo();
+        }
+    }
+});
 
 // Tool switching
 document.querySelectorAll('.anno-btn[data-tool]').forEach(btn => {
@@ -828,7 +1057,53 @@ document.querySelectorAll('.anno-btn[data-tool]').forEach(btn => {
     });
 });
 
-// Canvas events — for draw/highlight/text-create/eraser
+// Live toolbar → update active unconfirmed text node
+function getActiveUnconfirmedText() {
+    if (annoState.idx < 0) return null;
+    const pg = state.pages[annoState.idx];
+    return pg.annotations.find(a => a.type === 'text' && !a.confirmed) || null;
+}
+
+function getActiveTextDomNode(a) {
+    if (!a) return null;
+    const pg = state.pages[annoState.idx];
+    const idx = pg.annotations.indexOf(a);
+    const nodes = document.querySelectorAll('#anno-text-layer .anno-text-node');
+    for (const n of nodes) {
+        if (parseInt(n.dataset.annoIdx) === idx) return n;
+    }
+    return null;
+}
+
+document.getElementById('anno-font').addEventListener('change', e => {
+    const a = getActiveUnconfirmedText();
+    if (!a) return;
+    a.fontFamily = e.target.value;
+    const node = getActiveTextDomNode(a);
+    if (node) node.style.fontFamily = `'${a.fontFamily}', sans-serif`;
+});
+
+document.getElementById('anno-color').addEventListener('input', e => {
+    const a = getActiveUnconfirmedText();
+    if (!a) return;
+    a.color = e.target.value;
+    const node = getActiveTextDomNode(a);
+    if (node) node.style.color = a.color;
+});
+
+document.getElementById('anno-size').addEventListener('change', e => {
+    const a = getActiveUnconfirmedText();
+    if (!a) return;
+    a.size = parseInt(e.target.value);
+    const node = getActiveTextDomNode(a);
+    if (node) {
+        const canvas = document.getElementById('anno-canvas');
+        const scaleX = canvas.offsetWidth / canvas.width;
+        node.style.fontSize = (a.size * 4 * scaleX) + 'px';
+    }
+});
+
+// Canvas events — draw / highlight strokes / text create / eraser
 const annoCanvas = document.getElementById('anno-canvas');
 
 function getAnnoPos(e) {
@@ -843,18 +1118,24 @@ function annoDown(e) {
     const pg = state.pages[annoState.idx];
 
     if (annoState.tool === 'text') {
+        if (hasUnconfirmedText()) {
+            toast('Confirm or remove the current text before adding another');
+            return;
+        }
+        pushUndo();
         const pos = getAnnoPos(e);
         const a = {
             type: 'text', text: 'Text', x: pos.x, y: pos.y,
             color: document.getElementById('anno-color').value,
             size: parseInt(document.getElementById('anno-size').value),
+            fontFamily: document.getElementById('anno-font').value,
+            confirmed: false,
         };
         pg.annotations.push(a);
         const canvas = document.getElementById('anno-canvas');
         const scaleX = canvas.offsetWidth / canvas.width;
         const scaleY = canvas.offsetHeight / canvas.height;
-        const node = createTextNode(a, pg.annotations.length - 1, scaleX, scaleY);
-        // Immediately enter edit mode
+        const { wrap, node } = createTextNode(a, pg.annotations.length - 1, scaleX, scaleY);
         requestAnimationFrame(() => {
             node.classList.add('editing');
             node.focus();
@@ -869,16 +1150,17 @@ function annoDown(e) {
 
     if (annoState.tool === 'eraser') {
         const pos = getAnnoPos(e);
-        // Check strokes/highlights (text handled by DOM clicks)
         for (let i = pg.annotations.length - 1; i >= 0; i--) {
             const a = pg.annotations[i];
-            if (a.type === 'text') continue;
+            if (a.type === 'text') continue; // text erasing handled by DOM click
+            if (a.type === 'highlight') continue; // highlight erasing handled by DOM ✕
             if (a.points) {
                 for (const p of a.points) {
                     if (Math.abs(pos.x - p.x) < 20 && Math.abs(pos.y - p.y) < 20) {
+                        pushUndo();
                         pg.annotations.splice(i, 1);
                         redrawAnnoCanvas();
-                        rebuildTextLayer();
+                        rebuildOverlayLayer();
                         return;
                     }
                 }
@@ -887,7 +1169,7 @@ function annoDown(e) {
         return;
     }
 
-    // Draw / Highlight
+    // Draw / Highlight stroke
     annoState.drawing = true;
     const pos = getAnnoPos(e);
     currentStroke = {
@@ -903,14 +1185,34 @@ function annoMove(e) {
     const pos = getAnnoPos(e);
     currentStroke.points.push(pos);
     redrawAnnoCanvas();
-    drawAnno(annoCanvas.getContext('2d'), currentStroke);
+    if (currentStroke.type === 'draw') {
+        drawAnno(annoCanvas.getContext('2d'), currentStroke);
+    } else if (currentStroke.type === 'highlight') {
+        // Live preview highlight on canvas during stroke
+        const ctx = annoCanvas.getContext('2d');
+        ctx.save();
+        ctx.fillStyle = currentStroke.color;
+        ctx.globalAlpha = 0.3;
+        const minX = Math.min(...currentStroke.points.map(p => p.x));
+        const maxX = Math.max(...currentStroke.points.map(p => p.x));
+        const minY = Math.min(...currentStroke.points.map(p => p.y));
+        const maxY = Math.max(...currentStroke.points.map(p => p.y));
+        ctx.fillRect(minX, minY, maxX - minX, (maxY - minY) + currentStroke.size * 3);
+        ctx.restore();
+    }
 }
 
 function annoUp() {
     if (!annoState.drawing || !currentStroke) return;
     annoState.drawing = false;
     if (currentStroke.points.length > 1) {
+        pushUndo();
         state.pages[annoState.idx].annotations.push(currentStroke);
+        if (currentStroke.type === 'highlight') {
+            // Rebuild overlay so it becomes a draggable DOM node
+            rebuildOverlayLayer();
+            redrawAnnoCanvas();
+        }
     }
     currentStroke = null;
 }
@@ -924,18 +1226,14 @@ annoCanvas.addEventListener('touchmove', annoMove, { passive: false });
 annoCanvas.addEventListener('touchend', annoUp);
 
 document.getElementById('btn-anno-undo').addEventListener('click', () => {
-    const pg = state.pages[annoState.idx];
-    if (pg.annotations.length) {
-        pg.annotations.pop();
-        redrawAnnoCanvas();
-        rebuildTextLayer();
-    }
+    performUndo();
 });
 
 document.getElementById('btn-anno-clear').addEventListener('click', () => {
+    pushUndo();
     state.pages[annoState.idx].annotations = [];
     redrawAnnoCanvas();
-    rebuildTextLayer();
+    rebuildOverlayLayer();
 });
 
 function closeAnnotate() {
@@ -949,6 +1247,10 @@ document.getElementById('anno-close').addEventListener('click', () => closeModal
 document.getElementById('btn-anno-cancel').addEventListener('click', () => closeModalAndGoBack('modal-annotate'));
 
 document.getElementById('btn-anno-apply').addEventListener('click', () => {
+    // Auto-confirm any unconfirmed text
+    const pg = state.pages[annoState.idx];
+    pg.annotations.forEach(a => { if (a.type === 'text' && !a.confirmed) a.confirmed = true; });
+
     closeModalAndGoBack('modal-annotate');
     annoState.pdfDoc = null;
     annoState.baseImage = null;
@@ -1306,7 +1608,12 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 
         // Second pass: build final output
         const out = await PDFDocument.create();
-        const font = await out.embedFont(StandardFonts.Helvetica);
+        // Embed all fonts we might need
+        const embeddedFonts = {};
+        for (const [css, std] of Object.entries(FONT_MAP)) {
+            if (!embeddedFonts[std]) embeddedFonts[std] = await out.embedFont(std);
+        }
+        const defaultFont = embeddedFonts[StandardFonts.Helvetica];
 
         for (let i = 0; i < state.pages.length; i++) {
             showProgress(((i + 1) / state.pages.length) * 95, `Building page ${i + 1}/${state.pages.length}`);
@@ -1345,9 +1652,18 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                     const color = rgb(ar, ag, ab);
 
                     if (a.type === 'text') {
-                        outPage.drawText(a.text, {
-                            x: a.x * sx, y: oh - a.y * sy,
-                            size: a.size * 4 * sx, font, color,
+                        const stdFont = FONT_MAP[a.fontFamily] || StandardFonts.Helvetica;
+                        const font = embeddedFonts[stdFont] || defaultFont;
+                        // Handle multiline text
+                        const lines = (a.text || '').split('\n');
+                        const fontSize = a.size * 4 * sx;
+                        lines.forEach((line, li) => {
+                            if (!line) return;
+                            outPage.drawText(line, {
+                                x: a.x * sx,
+                                y: oh - a.y * sy - (li * fontSize * 1.3),
+                                size: fontSize, font, color,
+                            });
                         });
                     } else if (a.type === 'draw' && a.points.length > 1) {
                         for (let j = 1; j < a.points.length; j++) {
@@ -1357,14 +1673,27 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                                 thickness: a.size * sx, color,
                             });
                         }
-                    } else if (a.type === 'highlight' && a.points && a.points.length > 1) {
-                        const minX = Math.min(...a.points.map(p => p.x)) * sx;
-                        const maxX = Math.max(...a.points.map(p => p.x)) * sx;
-                        const minY = Math.min(...a.points.map(p => p.y)) * sy;
-                        const maxY = Math.max(...a.points.map(p => p.y)) * sy;
+                    } else if (a.type === 'highlight') {
+                        // Use stored rect if available (may have been dragged)
+                        let rx, ry, rw, rh;
+                        if (a.rect) {
+                            rx = a.rect.x * sx;
+                            ry = a.rect.y * sy;
+                            rw = a.rect.w * sx;
+                            rh = a.rect.h * sy;
+                        } else if (a.points && a.points.length > 1) {
+                            const minX = Math.min(...a.points.map(p => p.x));
+                            const maxX = Math.max(...a.points.map(p => p.x));
+                            const minY = Math.min(...a.points.map(p => p.y));
+                            const maxY = Math.max(...a.points.map(p => p.y));
+                            rx = minX * sx; ry = minY * sy;
+                            rw = (maxX - minX) * sx;
+                            rh = ((maxY - minY) + a.size * 3) * sy;
+                        } else continue;
+
                         outPage.drawRectangle({
-                            x: minX, y: oh - maxY - a.size * 3 * sy,
-                            width: maxX - minX, height: (maxY - minY) + a.size * 3 * sy,
+                            x: rx, y: oh - ry - rh,
+                            width: rw, height: rh,
                             color, opacity: 0.3,
                         });
                     }
@@ -1392,9 +1721,75 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 
 // ===================== PWA =====================
 
+// ===================== PWA INSTALL =====================
+
 let deferredPrompt;
-window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; document.getElementById('pwa-install').style.display = ''; });
-document.getElementById('pwa-install').addEventListener('click', () => { if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt.userChoice.then(() => { deferredPrompt = null; }); } });
+const pwaBtn = document.getElementById('pwa-install');
+const iosBanner = document.getElementById('ios-install-banner');
+
+// Detect if already running as installed PWA
+function isStandalone() {
+    return window.matchMedia('(display-mode: standalone)').matches
+        || window.navigator.standalone === true;
+}
+
+// Detect iOS Safari (not Chrome/Firefox on iOS, not already standalone)
+function isIosSafari() {
+    const ua = navigator.userAgent;
+    const isIos = /iP(hone|ad|od)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isSafari = /Safari/.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua);
+    return isIos && isSafari && !isStandalone();
+}
+
+// Chrome/Android/Edge/desktop install prompt
+window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredPrompt = e;
+    pwaBtn.style.display = '';
+});
+
+pwaBtn.addEventListener('click', () => {
+    if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then(result => {
+            deferredPrompt = null;
+            if (result.outcome === 'accepted') pwaBtn.style.display = 'none';
+        });
+    } else if (isIosSafari()) {
+        // Fallback: show the iOS banner from the button too
+        iosBanner.classList.add('show');
+    }
+});
+
+// Hide install button once app is installed
+window.addEventListener('appinstalled', () => {
+    pwaBtn.style.display = 'none';
+    deferredPrompt = null;
+    toast('App installed!');
+});
+
+// iOS Safari: show the banner after a short delay if not dismissed before
+if (isIosSafari()) {
+    const dismissed = sessionStorage.getItem('pwa-ios-dismissed');
+    if (!dismissed) {
+        // Show the install button in header too (for iOS it opens the banner)
+        pwaBtn.style.display = '';
+        // Show banner after 2s
+        setTimeout(() => {
+            iosBanner.classList.add('show');
+        }, 2000);
+    } else {
+        // Still show the header button even if banner was dismissed
+        pwaBtn.style.display = '';
+    }
+}
+
+document.getElementById('ios-install-close').addEventListener('click', () => {
+    iosBanner.classList.remove('show');
+    sessionStorage.setItem('pwa-ios-dismissed', '1');
+});
+
+// Service worker
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
 })();

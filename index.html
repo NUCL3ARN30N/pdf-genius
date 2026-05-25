@@ -12,6 +12,9 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="PDF Genius">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,700;1,400;1,500&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -149,6 +152,15 @@
                     <option value="8">Thick</option>
                     <option value="16">Bold</option>
                 </select>
+                <select id="anno-font" style="width:120px;padding:6px 8px;font-size:12px">
+                    <option value="DM Sans" style="font-family:'DM Sans'">DM Sans</option>
+                    <option value="Helvetica" style="font-family:Helvetica,Arial">Helvetica</option>
+                    <option value="Times New Roman" style="font-family:'Times New Roman',serif">Times</option>
+                    <option value="Courier New" style="font-family:'Courier New',monospace">Courier</option>
+                    <option value="Playfair Display" style="font-family:'Playfair Display',serif">Playfair</option>
+                    <option value="JetBrains Mono" style="font-family:'JetBrains Mono',monospace">JetBrains</option>
+                    <option value="Georgia" style="font-family:Georgia,serif">Georgia</option>
+                </select>
                 <div class="anno-sep"></div>
                 <button class="anno-btn" id="btn-anno-undo"><i class="fas fa-undo"></i></button>
                 <button class="anno-btn" id="btn-anno-clear"><i class="fas fa-trash-alt"></i></button>
@@ -240,6 +252,18 @@
                 <button class="tool-btn" id="btn-wm-cancel"><i class="fas fa-times"></i> Cancel</button>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- iOS Install Banner -->
+<div class="ios-install-banner" id="ios-install-banner">
+    <div class="ios-install-content">
+        <div class="ios-install-icon"><i class="fa-solid fa-file-pdf"></i></div>
+        <div class="ios-install-text">
+            <strong>Install PDF Genius</strong>
+            <span>Tap <i class="fas fa-share-from-square"></i> then <strong>"Add to Home Screen"</strong></span>
+        </div>
+        <button class="ios-install-close" id="ios-install-close"><i class="fas fa-times"></i></button>
     </div>
 </div>
 
