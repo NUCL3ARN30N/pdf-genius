@@ -6,8 +6,17 @@
     </linearGradient>
   </defs>
   <rect width="100" height="100" rx="18" fill="url(#bg)"/>
-  <!-- fa-solid fa-file-pdf (Font Awesome 6, viewBox 0 0 512 512) -->
-  <g transform="translate(18,6) scale(0.125)">
-    <path fill="white" d="M0 64C0 28.7 28.7 0 64 0L224 0l0 128c0 17.7 14.3 32 32 32l128 0 0 144-208 0c-35.3 0-64 28.7-64 64l0 144L64 512c-35.3 0-64-28.7-64-64L0 64zm384 64l-128 0L256 0 384 128zM176 404.2c0-8.1 6.6-14.7 14.7-14.7c7.3 0 13.5 5.3 14.6 12.5l0 .2c0 6.2-4 11.7-9.8 13.7l-1 .3c-1.1 .3-2.2 .6-3.3 .6c-8.5 .1-15.2-6.6-15.2-12.6zm70.9-1c5.1-3.3 11.2-5.2 17.6-5.2c17.7 0 32 14.3 32 32s-14.3 32-32 32c-11.2 0-21.1-5.7-26.9-14.4c-1.8-2.8-2.2-6.2-1-9.3l.6-1.6c1.8-4.3 6.5-6.5 10.9-5.2c.9 .3 1.7 .6 2.5 1.1c3.1 1.9 6.7 3 10.6 3c4.4 0 8.4-1.8 11.3-4.7c2.9-2.9 4.7-6.9 4.7-11.3c0-8.8-7.2-16-16-16c-3.9 0-7.5 1.4-10.3 3.8c-2.6 2.2-6.3 2.7-9.5 1.4l-1.2-.5c-4.8-2.1-6.5-8.1-3.3-12.1zM352 389.5c0-2.8 2.2-5 5-5l25 0c8.3 0 15 6.7 15 15s-6.7 15-15 15l-20 0 0 10c0 2.8-2.2 5-5 5s-5-2.2-5-5l0-35z"/>
-  </g>
+  
+  <!-- Clean document shape with folded corner -->
+  <path d="M28 18 h28 l16 16 v48 c0 3-2.5 5.5-5.5 5.5 h-38.5 c-3 0-5.5-2.5-5.5-5.5 v-58.5 c0-3 2.5-5.5 5.5-5.5z" fill="rgba(255,255,255,0.95)"/>
+  <path d="M56 18 v11 c0 2.8 2.2 5 5 5 h11z" fill="rgba(255,255,255,0.6)"/>
+  
+  <!-- Three body lines suggesting content -->
+  <rect x="33" y="40" width="28" height="3" rx="1.5" fill="#6c5ce7" opacity="0.25"/>
+  <rect x="33" y="48" width="22" height="3" rx="1.5" fill="#6c5ce7" opacity="0.25"/>
+  <rect x="33" y="56" width="25" height="3" rx="1.5" fill="#6c5ce7" opacity="0.25"/>
+  
+  <!-- PDF label -->
+  <rect x="44" y="66" width="34" height="20" rx="4" fill="white"/>
+  <text x="61" y="80.5" text-anchor="middle" font-family="system-ui,-apple-system,Helvetica,Arial,sans-serif" font-weight="800" font-size="13" fill="#6c5ce7" letter-spacing="-0.3">PDF</text>
 </svg>
