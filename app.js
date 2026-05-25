@@ -638,6 +638,17 @@ document.getElementById('btn-crop-apply').addEventListener('click', () => {
 const annoState = { idx: -1, tool: 'draw', drawing: false, pdfDoc: null, scale: 1.5, baseImage: null };
 let currentStroke = null;
 
+function getAnnoScale() {
+    // On mobile, fit canvas to viewport width minus padding
+    const wrap = document.getElementById('anno-canvas-wrap');
+    const availW = wrap ? wrap.clientWidth - 32 : window.innerWidth - 64;
+    if (availW < 700) {
+        // We'll calculate the actual scale after getting the page viewport
+        return null; // signal to use fit-to-width
+    }
+    return 1.5;
+}
+
 async function openAnnotate(idx) {
     annoState.idx = idx;
     const pg = state.pages[idx];
@@ -647,8 +658,18 @@ async function openAnnotate(idx) {
     const pdf = await getPdfDoc(srcData);
     annoState.pdfDoc = pdf;
     const page = await pdf.getPage(srcIdx + 1);
-    const vp = page.getViewport({ scale: annoState.scale });
 
+    // Determine scale: fit to width on mobile
+    const baseVp = page.getViewport({ scale: 1 });
+    const wrap = document.getElementById('anno-canvas-wrap');
+    const availW = (wrap ? wrap.clientWidth : window.innerWidth) - 32;
+    if (availW < baseVp.width * 1.5) {
+        annoState.scale = Math.max(0.8, availW / baseVp.width);
+    } else {
+        annoState.scale = 1.5;
+    }
+
+    const vp = page.getViewport({ scale: annoState.scale });
     const canvas = document.getElementById('anno-canvas');
     canvas.width = vp.width; canvas.height = vp.height;
     const ctx = canvas.getContext('2d');
@@ -673,6 +694,10 @@ async function openAnnotate(idx) {
     document.querySelector('.anno-btn[data-tool="draw"]').classList.add('on');
     annoState.tool = 'draw';
     canvas.style.cursor = 'crosshair';
+    // Default: block touch scroll on canvas (draw mode)
+    const wrapEl = document.getElementById('anno-canvas-wrap');
+    wrapEl.style.touchAction = 'none';
+    wrapEl.classList.remove('pan-mode');
 }
 
 // Font mapping: CSS font → pdf-lib StandardFont
@@ -1053,7 +1078,13 @@ document.querySelectorAll('.anno-btn[data-tool]').forEach(btn => {
         btn.classList.add('on');
         annoState.tool = btn.dataset.tool;
         const canvas = document.getElementById('anno-canvas');
-        canvas.style.cursor = annoState.tool === 'text' ? 'text' : annoState.tool === 'eraser' ? 'cell' : 'crosshair';
+        const cursors = { draw:'crosshair', highlight:'crosshair', text:'text', eraser:'cell', pan:'grab' };
+        canvas.style.cursor = cursors[annoState.tool] || 'crosshair';
+        // Pan mode: allow touch scrolling on canvas wrap
+        const wrap = document.getElementById('anno-canvas-wrap');
+        wrap.style.touchAction = annoState.tool === 'pan' ? 'auto' : 'none';
+        if (annoState.tool === 'pan') wrap.classList.add('pan-mode');
+        else wrap.classList.remove('pan-mode');
     });
 });
 
@@ -1103,17 +1134,31 @@ document.getElementById('anno-size').addEventListener('change', e => {
     }
 });
 
-// Canvas events — draw / highlight strokes / text create / eraser
+// Canvas events — draw / highlight strokes / text create / eraser / pan
 const annoCanvas = document.getElementById('anno-canvas');
 
 function getAnnoPos(e) {
     const r = annoCanvas.getBoundingClientRect();
-    const cx = (e.clientX ?? e.touches[0].clientX) - r.left;
-    const cy = (e.clientY ?? e.touches[0].clientY) - r.top;
+    const clientX = e.clientX ?? (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+    const clientY = e.clientY ?? (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+    const cx = clientX - r.left;
+    const cy = clientY - r.top;
     return { x: cx * (annoCanvas.width / r.width), y: cy * (annoCanvas.height / r.height) };
 }
 
+// Track touch count to distinguish draw (1 finger) from scroll (2 fingers)
+let touchCount = 0;
+
 function annoDown(e) {
+    // Pan tool: don't capture, let native scroll work
+    if (annoState.tool === 'pan') return;
+
+    // Touch: only capture single-finger. Two+ fingers = native scroll/zoom
+    if (e.touches) {
+        touchCount = e.touches.length;
+        if (touchCount > 1) return; // let browser handle pinch/scroll
+    }
+
     e.preventDefault();
     const pg = state.pages[annoState.idx];
 
@@ -1152,8 +1197,8 @@ function annoDown(e) {
         const pos = getAnnoPos(e);
         for (let i = pg.annotations.length - 1; i >= 0; i--) {
             const a = pg.annotations[i];
-            if (a.type === 'text') continue; // text erasing handled by DOM click
-            if (a.type === 'highlight') continue; // highlight erasing handled by DOM ✕
+            if (a.type === 'text') continue;
+            if (a.type === 'highlight') continue;
             if (a.points) {
                 for (const p of a.points) {
                     if (Math.abs(pos.x - p.x) < 20 && Math.abs(pos.y - p.y) < 20) {
@@ -1181,6 +1226,13 @@ function annoDown(e) {
 
 function annoMove(e) {
     if (!annoState.drawing || !currentStroke) return;
+    // If a second finger appeared during draw, cancel the stroke
+    if (e.touches && e.touches.length > 1) {
+        annoState.drawing = false;
+        currentStroke = null;
+        redrawAnnoCanvas();
+        return;
+    }
     e.preventDefault();
     const pos = getAnnoPos(e);
     currentStroke.points.push(pos);
@@ -1188,7 +1240,6 @@ function annoMove(e) {
     if (currentStroke.type === 'draw') {
         drawAnno(annoCanvas.getContext('2d'), currentStroke);
     } else if (currentStroke.type === 'highlight') {
-        // Live preview highlight on canvas during stroke
         const ctx = annoCanvas.getContext('2d');
         ctx.save();
         ctx.fillStyle = currentStroke.color;
@@ -1202,14 +1253,13 @@ function annoMove(e) {
     }
 }
 
-function annoUp() {
+function annoUp(e) {
     if (!annoState.drawing || !currentStroke) return;
     annoState.drawing = false;
     if (currentStroke.points.length > 1) {
         pushUndo();
         state.pages[annoState.idx].annotations.push(currentStroke);
         if (currentStroke.type === 'highlight') {
-            // Rebuild overlay so it becomes a draggable DOM node
             rebuildOverlayLayer();
             redrawAnnoCanvas();
         }
@@ -1221,6 +1271,8 @@ annoCanvas.addEventListener('mousedown', annoDown);
 annoCanvas.addEventListener('mousemove', annoMove);
 annoCanvas.addEventListener('mouseup', annoUp);
 annoCanvas.addEventListener('mouseleave', annoUp);
+
+// Touch events: use {passive: false} only for touchmove so we can conditionally preventDefault
 annoCanvas.addEventListener('touchstart', annoDown, { passive: false });
 annoCanvas.addEventListener('touchmove', annoMove, { passive: false });
 annoCanvas.addEventListener('touchend', annoUp);
