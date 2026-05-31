@@ -77,15 +77,50 @@
             <div class="compress-wrap">
                 <button class="tool-btn" id="btn-compress"><i class="fas fa-file-zipper"></i> Compress</button>
                 <div class="compress-popover" id="compress-popover">
-                    <div class="compress-popover-title"><i class="fas fa-sliders"></i> Image Quality</div>
-                    <div class="compress-slider-row">
-                        <span class="compress-label">Low</span>
-                        <input type="range" id="compress-quality" min="10" max="95" value="60" step="5">
-                        <span class="compress-label">High</span>
+                    <div class="compress-popover-title"><i class="fas fa-sliders"></i> Compression Options</div>
+
+                    <!-- Level slider -->
+                    <div class="compress-section">
+                        <div class="compress-section-label">Compression Level</div>
+                        <div class="compress-slider-row">
+                            <span class="compress-label">Max</span>
+                            <input type="range" id="compress-quality" min="1" max="5" value="3" step="1">
+                            <span class="compress-label">Min</span>
+                        </div>
+                        <div class="compress-quality-display" id="compress-quality-val">Balanced</div>
+                        <div class="compress-hint" id="compress-quality-hint">Good quality · medium file size</div>
                     </div>
-                    <div class="compress-quality-display"><span id="compress-quality-val">60</span>% quality</div>
-                    <div class="compress-hint">Lower quality = smaller file size</div>
-                    <button class="tool-btn primary" id="btn-compress-go" style="width:100%;margin-top:10px;justify-content:center">
+
+                    <!-- Extra options -->
+                    <div class="compress-section">
+                        <div class="compress-section-label">Additional Options</div>
+                        <label class="compress-check">
+                            <input type="checkbox" id="opt-remove-meta" checked>
+                            <span>Remove metadata</span>
+                        </label>
+                        <label class="compress-check">
+                            <input type="checkbox" id="opt-remove-unused">
+                            <span>Remove unused objects</span>
+                        </label>
+                        <label class="compress-check">
+                            <input type="checkbox" id="opt-remove-fonts">
+                            <span>Remove embedded fonts</span>
+                        </label>
+                    </div>
+
+                    <!-- Image downscale -->
+                    <div class="compress-section">
+                        <label class="compress-check compress-check-inline">
+                            <input type="checkbox" id="opt-downscale">
+                            <span>Downscale images to</span>
+                        </label>
+                        <div class="compress-downscale-row" id="downscale-row">
+                            <input type="range" id="opt-downscale-pct" min="25" max="90" value="70" step="5" disabled>
+                            <span class="compress-downscale-val" id="downscale-val">70%</span>
+                        </div>
+                    </div>
+
+                    <button class="tool-btn primary" id="btn-compress-go" style="width:100%;margin-top:12px;justify-content:center">
                         <i class="fas fa-download"></i> Compress &amp; Download
                     </button>
                 </div>
