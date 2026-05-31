@@ -41,7 +41,9 @@ async function getPdfDoc(ab, password) {
     const id = getAbId(ab);
     const cacheKey = id + (password ? ':' + password : '');
     if (pdfDocCache.has(cacheKey)) return pdfDocCache.get(cacheKey);
-    const opts = { data: ab.slice(0) };
+    // Always pass Uint8Array to pdf.js — it handles both but Uint8Array is more reliable
+    const bytes = ab instanceof Uint8Array ? ab.slice() : new Uint8Array(ab);
+    const opts = { data: bytes };
     if (password) opts.password = password;
     const doc = await pdfjsLib.getDocument(opts).promise;
     pdfDocCache.set(cacheKey, doc);
@@ -313,17 +315,17 @@ async function loadFiles(files) {
         const { pdf, password } = result;
 
         // If password-protected, decrypt to a plain buffer so all later operations work
-        let workingData = data;
+        let workingData = data; // data is already an ArrayBuffer from FileReader
         if (password) {
             try {
                 showProgress(((done + 1) / total) * 80, `Decrypting ${file.name}...`);
-                const encrypted = await PDFDocument.load(data, { password, ignoreEncryption: false });
+                const encrypted = await PDFDocument.load(new Uint8Array(data), { password, ignoreEncryption: false });
                 const decrypted = await PDFDocument.create();
                 const pages = await decrypted.copyPages(encrypted, encrypted.getPageIndices());
                 pages.forEach(p => decrypted.addPage(p));
                 const decBytes = await decrypted.save();
-                // Make a clean ArrayBuffer copy — decBytes may be a view into a larger buffer
-                workingData = decBytes.slice(0).buffer;
+                // Store as Uint8Array for consistent identity — used as WeakMap key
+                workingData = decBytes.slice(0);
             } catch(e) {
                 toast(`Could not decrypt ${file.name}: ${e.message}`);
                 done++; continue;
@@ -333,7 +335,7 @@ async function loadFiles(files) {
         // Detect form fields via pdf-lib
         let formFieldsByPage = {};
         try {
-            const pdfLibDoc = await PDFDocument.load(workingData, { ignoreEncryption: true });
+            const pdfLibDoc = await PDFDocument.load(new Uint8Array(workingData instanceof Uint8Array ? workingData : new Uint8Array(workingData)), { ignoreEncryption: true });
             const form = pdfLibDoc.getForm();
             const fields = form.getFields();
             for (const field of fields) {
@@ -404,7 +406,9 @@ async function loadFiles(files) {
             // No form or encrypted — that's fine
         }
 
-        for (let pi = 0; pi < pdf.numPages; pi++) {
+        // Get page count from the working (possibly decrypted) document
+        const workingPdf = password ? await getPdfDoc(workingData) : pdf;
+        for (let pi = 0; pi < workingPdf.numPages; pi++) {
             state.pages.push({
                 srcFile: workingData, srcName: file.name, srcPageIdx: pi,
                 data: null, rotation: 0, crop: null, annotations: [],
