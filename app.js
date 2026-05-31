@@ -233,12 +233,15 @@ function showEditor() {
 // ===================== FILE LOADING =====================
 
 async function loadFiles(files) {
-    const pdfFiles = files.filter(f => f.type === 'application/pdf' || f.name.endsWith('.pdf'));
-    if (!pdfFiles.length) { toast('Please select PDF files'); return; }
+    const pdfFiles = files.filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    const imgFiles = files.filter(f => f.type.startsWith('image/'));
+    if (!pdfFiles.length && !imgFiles.length) { toast('Please select PDF or image files'); return; }
 
-    for (let fi = 0; fi < pdfFiles.length; fi++) {
-        const file = pdfFiles[fi];
-        showProgress(((fi + 1) / pdfFiles.length) * 80, `Loading ${file.name}...`);
+    const total = pdfFiles.length + imgFiles.length;
+    let done = 0;
+
+    for (const file of pdfFiles) {
+        showProgress(((done + 1) / total) * 80, `Loading ${file.name}...`);
         const data = await readFile(file);
         const pdf = await getPdfDoc(data);
 
@@ -321,9 +324,22 @@ async function loadFiles(files) {
                 srcFile: data, srcName: file.name, srcPageIdx: pi,
                 data: null, rotation: 0, crop: null, annotations: [],
                 formFields: formFieldsByPage[pi] || [],
-                formValues: {}, // fieldName → user value
+                formValues: {},
             });
         }
+        done++;
+    }
+
+    // Convert image files to single-page PDFs
+    for (const file of imgFiles) {
+        showProgress(((done + 1) / total) * 80, `Converting ${file.name}…`);
+        const bytes = await convertImageToPdfBytes(file);
+        state.pages.push({
+            srcFile: bytes, srcName: file.name.replace(/\.[^.]+$/, '') + '.pdf',
+            srcPageIdx: 0, data: null, rotation: 0, crop: null, annotations: [],
+            formFields: [], formValues: {},
+        });
+        done++;
     }
 
     showProgress(90, 'Rendering thumbnails...');
@@ -331,13 +347,12 @@ async function loadFiles(files) {
     await renderGrid();
     hideProgress();
 
-    // Check if any forms were found
     const totalFields = state.pages.reduce((s, p) => s + p.formFields.length, 0);
-    if (totalFields > 0) {
-        toast(`Loaded ${pdfFiles.length} file(s), ${state.pages.length} pages — ${totalFields} form field(s) detected`);
-    } else {
-        toast(`Loaded ${pdfFiles.length} file(s), ${state.pages.length} total pages`);
-    }
+    const summary = [];
+    if (pdfFiles.length) summary.push(`${pdfFiles.length} PDF(s)`);
+    if (imgFiles.length) summary.push(`${imgFiles.length} image(s)`);
+    const base = `Loaded ${summary.join(', ')} — ${state.pages.length} page(s)`;
+    toast(totalFields > 0 ? base + ` — ${totalFields} form field(s) detected` : base);
 }
 
 const uploadZone = document.getElementById('upload-zone');
@@ -818,10 +833,14 @@ const FONT_MAP = {
 function drawAnno(ctx, a) {
     ctx.save();
     if (a.type === 'draw') {
-        ctx.strokeStyle = a.color; ctx.lineWidth = a.size;
+        const s = annoState.scale;
+        ctx.strokeStyle = a.color; ctx.lineWidth = a.size * s;
         ctx.lineCap = 'round'; ctx.lineJoin = 'round';
         ctx.beginPath();
-        a.points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        a.points.forEach((p, i) => {
+            const px = p.x * s, py = p.y * s;
+            i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+        });
         ctx.stroke();
     }
     // highlights and text are DOM overlays — not drawn on canvas
@@ -842,13 +861,12 @@ function rebuildOverlayLayer() {
     const layer = document.getElementById('anno-text-layer');
     layer.innerHTML = '';
     const pg = state.pages[annoState.idx];
-    const canvas = document.getElementById('anno-canvas');
-    const scaleX = canvas.offsetWidth / canvas.width;
-    const scaleY = canvas.offsetHeight / canvas.height;
+    // PDF points → canvas pixels: multiply by annoState.scale
+    const s = annoState.scale;
 
     pg.annotations.forEach((a, i) => {
-        if (a.type === 'text') createTextNode(a, i, scaleX, scaleY);
-        else if (a.type === 'highlight') createHighlightNode(a, i, scaleX, scaleY);
+        if (a.type === 'text') createTextNode(a, i, s, s);
+        else if (a.type === 'highlight') createHighlightNode(a, i, s, s);
     });
 }
 // Keep old name as alias
@@ -948,11 +966,10 @@ function createTextNode(a, annoIdx, scaleX, scaleY) {
         };
         const onUp = () => {
             node.classList.remove('dragging');
-            const canvas = document.getElementById('anno-canvas');
-            const sx = canvas.width / canvas.offsetWidth;
-            const sy = canvas.height / canvas.offsetHeight;
-            a.x = parseFloat(wrap.style.left) * sx;
-            a.y = (parseFloat(wrap.style.top) * sy) + a.size * 4;
+            const s = annoState.scale;
+            // DOM pixels (canvas-space) → PDF points
+            a.x = parseFloat(wrap.style.left) / s;
+            a.y = parseFloat(wrap.style.top) / s + a.size * 4;
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
         };
@@ -1098,12 +1115,11 @@ function createHighlightNode(a, annoIdx, scaleX, scaleY) {
                 node.style.width = nw + 'px'; node.style.height = nh + 'px';
             };
             const onUp = () => {
-                const sx = canvas.width / canvas.offsetWidth;
-                const sy = canvas.height / canvas.offsetHeight;
-                a.rect.x = parseFloat(node.style.left) * sx;
-                a.rect.y = parseFloat(node.style.top) * sy;
-                a.rect.w = parseFloat(node.style.width) * sx;
-                a.rect.h = parseFloat(node.style.height) * sy;
+                const s = annoState.scale;
+                a.rect.x = parseFloat(node.style.left) / s;
+                a.rect.y = parseFloat(node.style.top) / s;
+                a.rect.w = parseFloat(node.style.width) / s;
+                a.rect.h = parseFloat(node.style.height) / s;
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
             };
@@ -1128,10 +1144,9 @@ function createHighlightNode(a, annoIdx, scaleX, scaleY) {
         };
         const onUp = () => {
             node.classList.remove('dragging');
-            const sx = canvas.width / canvas.offsetWidth;
-            const sy = canvas.height / canvas.offsetHeight;
-            a.rect.x = parseFloat(node.style.left) * sx;
-            a.rect.y = parseFloat(node.style.top) * sy;
+            const s = annoState.scale;
+            a.rect.x = parseFloat(node.style.left) / s;
+            a.rect.y = parseFloat(node.style.top) / s;
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
         };
@@ -1232,9 +1247,7 @@ document.getElementById('anno-size').addEventListener('change', e => {
     a.size = parseInt(e.target.value);
     const node = getActiveTextDomNode(a);
     if (node) {
-        const canvas = document.getElementById('anno-canvas');
-        const scaleX = canvas.offsetWidth / canvas.width;
-        node.style.fontSize = (a.size * 4 * scaleX) + 'px';
+        node.style.fontSize = (a.size * 4 * annoState.scale) + 'px';
     }
 });
 
@@ -1247,7 +1260,10 @@ function getAnnoPos(e) {
     const clientY = e.clientY ?? (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
     const cx = clientX - r.left;
     const cy = clientY - r.top;
-    return { x: cx * (annoCanvas.width / r.width), y: cy * (annoCanvas.height / r.height) };
+    // Convert from screen pixels → canvas pixels → PDF points
+    const canvasX = cx * (annoCanvas.width / r.width);
+    const canvasY = cy * (annoCanvas.height / r.height);
+    return { x: canvasX / annoState.scale, y: canvasY / annoState.scale };
 }
 
 // Track touch count to distinguish draw (1 finger) from scroll (2 fingers)
@@ -1345,14 +1361,15 @@ function annoMove(e) {
         drawAnno(annoCanvas.getContext('2d'), currentStroke);
     } else if (currentStroke.type === 'highlight') {
         const ctx = annoCanvas.getContext('2d');
+        const s = annoState.scale;
         ctx.save();
         ctx.fillStyle = currentStroke.color;
         ctx.globalAlpha = 0.3;
-        const minX = Math.min(...currentStroke.points.map(p => p.x));
-        const maxX = Math.max(...currentStroke.points.map(p => p.x));
-        const minY = Math.min(...currentStroke.points.map(p => p.y));
-        const maxY = Math.max(...currentStroke.points.map(p => p.y));
-        ctx.fillRect(minX, minY, maxX - minX, (maxY - minY) + currentStroke.size * 3);
+        const minX = Math.min(...currentStroke.points.map(p => p.x)) * s;
+        const maxX = Math.max(...currentStroke.points.map(p => p.x)) * s;
+        const minY = Math.min(...currentStroke.points.map(p => p.y)) * s;
+        const maxY = Math.max(...currentStroke.points.map(p => p.y)) * s;
+        ctx.fillRect(minX, minY, maxX - minX, (maxY - minY) + currentStroke.size * 3 * s);
         ctx.restore();
     }
 }
@@ -1795,10 +1812,8 @@ document.getElementById('btn-download').addEventListener('click', async () => {
             if (pg.annotations.length) {
                 const origPage = src.getPages()[srcIdx];
                 const { width: ow, height: oh } = origPage.getSize();
-                const renderPdf = await pdfjsLib.getDocument({ data: srcData.slice(0) }).promise;
-                const renderPage = await renderPdf.getPage(srcIdx + 1);
-                const vp = renderPage.getViewport({ scale: annoState.scale || 1.5 });
-                const sx = ow / vp.width, sy = oh / vp.height;
+                // Annotations are stored in PDF points (scale=1) — direct mapping
+                const sx = 1, sy = 1;
 
                 for (const a of pg.annotations) {
                     const hx = a.color;
@@ -2022,10 +2037,10 @@ document.getElementById('btn-compress-go').addEventListener('click', async () =>
                 canvas.height = Math.round(renderVp.height);
                 await page.render({ canvasContext: canvas.getContext('2d'), viewport: renderVp }).promise;
 
-                // Draw stored annotations
+                // Draw stored annotations (points in PDF points, scale to effectiveScale)
                 if (pg.annotations && pg.annotations.length) {
                     const ctx = canvas.getContext('2d');
-                    const annoScale = effectiveScale / (annoState.scale || 1.5);
+                    const annoScale = effectiveScale; // PDF pts → canvas pixels at effectiveScale
                     pg.annotations.filter(a => a.type === 'draw').forEach(a => {
                         ctx.save();
                         ctx.strokeStyle = a.color;
@@ -2140,70 +2155,39 @@ document.getElementById('btn-insert-blank').addEventListener('click', async () =
 
 // ===================== IMAGE TO PDF =====================
 
-document.getElementById('btn-img-to-pdf').addEventListener('click', () => {
-    document.getElementById('img-to-pdf-input').click();
-});
+// ===================== IMAGE → PDF HELPER =====================
 
-document.getElementById('img-to-pdf-input').addEventListener('change', async e => {
-    const files = Array.from(e.target.files);
-    if (!files.length) return;
-    e.target.value = '';
-    showProgress(0, 'Converting images…');
-
-    for (let i = 0; i < files.length; i++) {
-        showProgress((i / files.length) * 90, `Converting ${files[i].name}…`);
-        const data = await new Promise((res, rej) => {
-            const r = new FileReader();
-            r.onload = () => res(r.result);
-            r.onerror = rej;
-            r.readAsDataURL(files[i]);
-        });
-
-        // Get natural image dimensions
-        const dims = await new Promise(res => {
-            const img = new Image();
-            img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight });
-            img.src = data;
-        });
-
-        // Convert to A4 if image is too small, else keep image size in points (1px = 0.75pt)
-        const ptW = Math.max(dims.w * 0.75, 595);
-        const ptH = ptW * dims.h / dims.w;
-
-        const pdfDoc = await PDFDocument.create();
-        const base64 = data.split(',')[1];
-        const mimeType = data.split(';')[0].split(':')[1];
-        let embedded;
-        if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') {
-            embedded = await pdfDoc.embedJpg(Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
-        } else {
-            // Use canvas to convert to JPEG for everything else
-            const canvas = document.createElement('canvas');
-            canvas.width = dims.w; canvas.height = dims.h;
-            const ctx = canvas.getContext('2d');
-            const img = new Image();
-            await new Promise(res => { img.onload = res; img.src = data; });
-            ctx.drawImage(img, 0, 0);
-            const jpegData = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
-            embedded = await pdfDoc.embedJpg(Uint8Array.from(atob(jpegData), c => c.charCodeAt(0)));
-        }
-        const page = pdfDoc.addPage([ptW, ptH]);
-        page.drawImage(embedded, { x: 0, y: 0, width: ptW, height: ptH });
-        const bytes = await pdfDoc.save();
-
-        state.pages.push({
-            srcFile: bytes.buffer, srcName: files[i].name.replace(/\.[^.]+$/, '') + '.pdf',
-            srcPageIdx: 0, data: null, rotation: 0, crop: null, annotations: [],
-            formFields: [], formValues: {},
-        });
+async function convertImageToPdfBytes(file) {
+    const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej;
+        r.readAsDataURL(file);
+    });
+    const dims = await new Promise(res => {
+        const img = new Image();
+        img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight });
+        img.src = dataUrl;
+    });
+    const ptW = Math.max(dims.w * 0.75, 595);
+    const ptH = ptW * dims.h / dims.w;
+    const pdfDoc = await PDFDocument.create();
+    const mimeType = dataUrl.split(';')[0].split(':')[1];
+    const base64 = dataUrl.split(',')[1];
+    let embedded;
+    if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') {
+        embedded = await pdfDoc.embedJpg(Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
+    } else {
+        const canvas = document.createElement('canvas');
+        canvas.width = dims.w; canvas.height = dims.h;
+        const img = new Image();
+        await new Promise(res => { img.onload = res; img.src = dataUrl; });
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        const jpegB64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+        embedded = await pdfDoc.embedJpg(Uint8Array.from(atob(jpegB64), c => c.charCodeAt(0)));
     }
-
-    showProgress(100, 'Done!');
-    showEditor();
-    await renderGrid();
-    hideProgress();
-    toast(`${files.length} image(s) added as PDF page(s)`);
-});
+    const page = pdfDoc.addPage([ptW, ptH]);
+    page.drawImage(embedded, { x: 0, y: 0, width: ptW, height: ptH });
+    return (await pdfDoc.save()).buffer;
+}
 
 // ===================== STAMP / SIGNATURE =====================
 

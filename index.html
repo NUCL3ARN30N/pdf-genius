@@ -51,14 +51,14 @@
 <!-- ==================== UPLOAD SCREEN ==================== -->
 <div class="app on" id="screen-upload">
     <div class="panel">
-        <div class="ph"><i class="fas fa-cloud-upload-alt"></i> Load PDFs</div>
+        <div class="ph"><i class="fas fa-cloud-upload-alt"></i> Load Files</div>
         <div class="pb">
             <div class="upload-zone" id="upload-zone">
                 <i class="fas fa-file-pdf"></i>
-                <div class="upload-title">Drop PDF files here or click to browse</div>
-                <div class="hint">Add one or more PDFs — merge, edit pages, crop, annotate, watermark, then download</div>
+                <div class="upload-title">Drop files here or click to browse</div>
+                <div class="hint">PDFs, JPG, PNG, WebP and more — merge, edit, annotate, then download</div>
             </div>
-            <input type="file" id="file-input" accept=".pdf" multiple hidden>
+            <input type="file" id="file-input" accept=".pdf,image/*" multiple hidden>
         </div>
     </div>
 </div>
@@ -67,8 +67,8 @@
 <div class="app" id="screen-editor">
     <div class="top-bar">
         <div class="top-left">
-            <button class="tool-btn" id="btn-add-more"><i class="fas fa-plus"></i> Add PDFs</button>
-            <input type="file" id="add-more-input" accept=".pdf" multiple hidden>
+            <button class="tool-btn" id="btn-add-more"><i class="fas fa-plus"></i> Add Files</button>
+            <input type="file" id="add-more-input" accept=".pdf,image/*" multiple hidden>
             <div class="top-sep"></div>
             <span class="top-stat"><i class="fas fa-file"></i> <span id="stat-pages">0</span> pages</span>
             <span class="top-stat"><i class="fas fa-check-circle"></i> <span id="stat-selected">0</span> selected</span>
@@ -142,8 +142,6 @@
         <button class="tool-btn" id="btn-redact" disabled><i class="fas fa-eraser"></i> Redact</button>
         <div class="tool-sep"></div>
         <button class="tool-btn" id="btn-insert-blank" disabled><i class="fas fa-file-circle-plus"></i> Insert Blank</button>
-        <button class="tool-btn" id="btn-img-to-pdf"><i class="fas fa-image"></i> Image to PDF</button>
-        <input type="file" id="img-to-pdf-input" accept="image/*" multiple hidden>
         <div class="tool-sep"></div>
         <button class="tool-btn" id="btn-stamp" disabled><i class="fas fa-signature"></i> Stamp</button>
         <button class="tool-btn" id="btn-page-numbers" disabled><i class="fas fa-list-ol"></i> Page Numbers</button>
