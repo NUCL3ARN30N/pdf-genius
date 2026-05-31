@@ -110,6 +110,17 @@ async function loadPdfWithPassword(data, filename) {
     }
 }
 
+function safeCopy(buf) {
+    // Returns a fresh Uint8Array that won't detach the original buffer when passed to PDFDocument.load
+    if (buf instanceof Uint8Array) return buf.slice();
+    if (buf instanceof ArrayBuffer) return new Uint8Array(buf.slice(0));
+    return new Uint8Array(buf);
+}
+
+async function safeLoad(buf, opts) {
+    return PDFDocument.load(safeCopy(buf), opts);
+}
+
 function invalidateCache(ab) {
     const id = getAbId(ab);
     // Remove all thumb entries for this buffer
@@ -319,7 +330,7 @@ async function loadFiles(files) {
         if (password) {
             try {
                 showProgress(((done + 1) / total) * 80, `Decrypting ${file.name}...`);
-                const encrypted = await PDFDocument.load(new Uint8Array(data), { password, ignoreEncryption: false });
+                const encrypted = await safeLoad(data, { password, ignoreEncryption: false });
                 const decrypted = await PDFDocument.create();
                 const pages = await decrypted.copyPages(encrypted, encrypted.getPageIndices());
                 pages.forEach(p => decrypted.addPage(p));
@@ -335,7 +346,7 @@ async function loadFiles(files) {
         // Detect form fields via pdf-lib
         let formFieldsByPage = {};
         try {
-            const pdfLibDoc = await PDFDocument.load(new Uint8Array(workingData instanceof Uint8Array ? workingData : new Uint8Array(workingData)), { ignoreEncryption: true });
+            const pdfLibDoc = await safeLoad(workingData, { ignoreEncryption: true });
             const form = pdfLibDoc.getForm();
             const fields = form.getFields();
             for (const field of fields) {
@@ -1146,7 +1157,7 @@ document.getElementById('btn-resize-apply').addEventListener('click', async () =
         const srcData = pg.data || pg.srcFile;
         const srcIdx = pg.data ? 0 : pg.srcPageIdx;
 
-        const srcDoc = await PDFDocument.load(srcData);
+        const srcDoc = await safeLoad(srcData);
         const srcPage = srcDoc.getPages()[srcIdx];
         const { width: sw, height: sh } = srcPage.getSize();
 
@@ -2045,7 +2056,7 @@ document.getElementById('btn-wm-apply').addEventListener('click', async () => {
         const srcData = pg.data || pg.srcFile;
         const srcIdx = pg.data ? 0 : pg.srcPageIdx;
 
-        const src = await PDFDocument.load(srcData);
+        const src = await safeLoad(srcData);
         const single = await PDFDocument.create();
         const [copied] = await single.copyPages(src, [srcIdx]);
         single.addPage(copied);
@@ -2093,7 +2104,7 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         // Fill forms and bake into new single-page PDFs
         for (const [, info] of formSources) {
             try {
-                const filledDoc = await PDFDocument.load(info.ab, { ignoreEncryption: true });
+                const filledDoc = await safeLoad(info.ab, { ignoreEncryption: true });
                 const form = filledDoc.getForm();
 
                 // Collect all form values from pages using this source
@@ -2149,7 +2160,7 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 
                 // Now update each page that used this source with its own single-page extract
                 for (const { pg, srcIdx } of info.pages) {
-                    const filledSrc = await PDFDocument.load(filledBuf);
+                    const filledSrc = await safeLoad(filledBuf);
                     const single = await PDFDocument.create();
                     const [copied] = await single.copyPages(filledSrc, [srcIdx]);
                     single.addPage(copied);
@@ -2180,7 +2191,8 @@ document.getElementById('btn-download').addEventListener('click', async () => {
             const srcData = pg.data || pg.srcFile;
             const srcIdx = pg.data ? 0 : pg.srcPageIdx;
 
-            const src = await PDFDocument.load(new Uint8Array(srcData));
+            // Always create a safe copy — new Uint8Array(ab) can detach the original buffer
+            const src = await safeLoad(srcData);
             const [copied] = await out.copyPages(src, [srcIdx]);
 
             if (pg.rotation) {
@@ -2627,7 +2639,7 @@ document.getElementById('btn-compress-go').addEventListener('click', async () =>
                 const srcData = pg.data || pg.srcFile;
                 const srcIdx = pg.data ? 0 : pg.srcPageIdx;
 
-                const srcDoc = await PDFDocument.load(srcData, { ignoreEncryption: true });
+                const srcDoc = await safeLoad(srcData, { ignoreEncryption: true });
 
                 if (removeUnused) {
                     // Mark all pages except target for removal before copying
@@ -2789,7 +2801,7 @@ document.getElementById('btn-insert-blank').addEventListener('click', async () =
     const refPg = state.pages[insertAfter];
     const refSrc = refPg.data || refPg.srcFile;
     const refIdx = refPg.data ? 0 : refPg.srcPageIdx;
-    const refDoc = await PDFDocument.load(refSrc);
+    const refDoc = await safeLoad(refSrc);
     const refPage = refDoc.getPages()[refIdx];
     const { width, height } = refPage.getSize();
 
@@ -3055,7 +3067,7 @@ document.getElementById('btn-pn-apply').addEventListener('click', async () => {
         const pg = state.pages[i];
         const srcData = pg.data || pg.srcFile;
         const srcIdx = pg.data ? 0 : pg.srcPageIdx;
-        const srcDoc = await PDFDocument.load(srcData);
+        const srcDoc = await safeLoad(srcData);
         const font = await srcDoc.embedFont(StandardFonts.Helvetica);
         const page = srcDoc.getPages()[srcIdx];
         const { width, height } = page.getSize();
@@ -3118,7 +3130,7 @@ document.getElementById('btn-hf-apply').addEventListener('click', async () => {
         const pg = state.pages[i];
         const srcData = pg.data || pg.srcFile;
         const srcIdx = pg.data ? 0 : pg.srcPageIdx;
-        const srcDoc = await PDFDocument.load(srcData);
+        const srcDoc = await safeLoad(srcData);
         const font = await srcDoc.embedFont(StandardFonts.Helvetica);
         const page = srcDoc.getPages()[srcIdx];
         const { width, height } = page.getSize();
@@ -3185,7 +3197,7 @@ document.getElementById('btn-pw-apply').addEventListener('click', async () => {
                 const pg = state.pages[i];
                 const srcData = pg.data || pg.srcFile;
                 const srcIdx = pg.data ? 0 : pg.srcPageIdx;
-                const decryptedDoc = await PDFDocument.load(srcData, { password: currentPw, ignoreEncryption: false });
+                const decryptedDoc = await safeLoad(srcData, { password: currentPw, ignoreEncryption: false });
                 const single = await PDFDocument.create();
                 const [copied] = await single.copyPages(decryptedDoc, [srcIdx]);
                 single.addPage(copied);
@@ -3289,7 +3301,7 @@ document.getElementById('btn-redact-apply').addEventListener('click', async () =
     const pg = state.pages[redactState.idx];
     const srcData = pg.data || pg.srcFile;
     const srcIdx = pg.data ? 0 : pg.srcPageIdx;
-    const srcDoc = await PDFDocument.load(srcData);
+    const srcDoc = await safeLoad(srcData);
     const page = srcDoc.getPages()[srcIdx];
     const { width, height } = page.getSize();
 
@@ -3351,7 +3363,7 @@ async function buildSharePdf() {
         const pg = state.pages[i];
         const srcData = pg.data || pg.srcFile;
         const srcIdx = pg.data ? 0 : pg.srcPageIdx;
-        const src = await PDFDocument.load(srcData);
+        const src = await safeLoad(srcData);
         const [copied] = await out.copyPages(src, [srcIdx]);
         if (pg.rotation) copied.setRotation(degrees((copied.getRotation().angle || 0) + pg.rotation));
         if (pg.crop) { copied.setCropBox(pg.crop.x, pg.crop.y, pg.crop.w, pg.crop.h); copied.setMediaBox(pg.crop.x, pg.crop.y, pg.crop.w, pg.crop.h); }
