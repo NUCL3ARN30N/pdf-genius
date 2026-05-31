@@ -2283,12 +2283,17 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         }
 
         showProgress(97, 'Saving...');
-        let bytes = await out.save();
+        const savedBytes = await out.save();
+
+        let finalBytes;
         if (state.password) {
-            // Ensure we have a fresh, non-detached Uint8Array copy before encrypting
-            const freshBytes = new Uint8Array(bytes.length);
-            freshBytes.set(bytes);
-            bytes = await encryptPdf(freshBytes, state.password.user, state.password.owner);
+            // Read through Blob to get a fresh, independent ArrayBuffer
+            const blob = new Blob([savedBytes], { type: 'application/pdf' });
+            const arrayBuf = await blob.arrayBuffer();
+            const safePdfBytes = new Uint8Array(arrayBuf);
+            finalBytes = await encryptPdf(safePdfBytes, state.password.user, state.password.owner);
+        } else {
+            finalBytes = savedBytes;
         }
         const names = [...new Set(state.pages.map(p => p.srcName))];
         let fname = 'edited.pdf';
@@ -2296,7 +2301,7 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         else if (names.length <= 3) fname = names.map(n => n.replace('.pdf', '')).join('_') + '_merged.pdf';
         else fname = 'merged_' + state.pages.length + 'pages.pdf';
 
-        downloadBlob(bytes, fname);
+        downloadBlob(finalBytes, fname);
         showProgress(100, 'Done!');
         toast('PDF downloaded!');
     } catch (err) {
@@ -2310,15 +2315,9 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 // Uses the PDF xref table to locate streams precisely, then encrypts them.
 
 async function encryptPdf(pdfBytes, userPassword, ownerPassword) {
-    const data = (() => {
-        // Always make a fresh, non-detached copy
-        if (pdfBytes instanceof Uint8Array) {
-            const copy = new Uint8Array(pdfBytes.length);
-            copy.set(pdfBytes);
-            return copy;
-        }
-        return new Uint8Array(pdfBytes);
-    })();
+    // Use Blob round-trip to get a guaranteed fresh, non-detached ArrayBuffer
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const data = new Uint8Array(await blob.arrayBuffer());
     const dec = new TextDecoder('latin1');
     const enc = new TextEncoder();
     const toHex = arr => Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('');
@@ -3373,9 +3372,9 @@ async function buildSharePdf() {
     progressFill.style.width = '95%';
     let bytes = await out.save();
     if (state.password) {
-        const freshBytes = new Uint8Array(bytes.length);
-        freshBytes.set(bytes);
-        bytes = await encryptPdf(freshBytes, state.password.user, state.password.owner);
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        const arrayBuf = await blob.arrayBuffer();
+        bytes = await encryptPdf(new Uint8Array(arrayBuf), state.password.user, state.password.owner);
     }
     progressFill.style.width = '100%';
     document.getElementById('share-building').style.display = 'none';
