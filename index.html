@@ -74,6 +74,22 @@
             <span class="top-stat"><i class="fas fa-check-circle"></i> <span id="stat-selected">0</span> selected</span>
         </div>
         <div class="top-right">
+            <div class="compress-wrap">
+                <button class="tool-btn" id="btn-compress"><i class="fas fa-file-zipper"></i> Compress</button>
+                <div class="compress-popover" id="compress-popover">
+                    <div class="compress-popover-title"><i class="fas fa-sliders"></i> Image Quality</div>
+                    <div class="compress-slider-row">
+                        <span class="compress-label">Low</span>
+                        <input type="range" id="compress-quality" min="10" max="95" value="60" step="5">
+                        <span class="compress-label">High</span>
+                    </div>
+                    <div class="compress-quality-display"><span id="compress-quality-val">60</span>% quality</div>
+                    <div class="compress-hint">Lower quality = smaller file size</div>
+                    <button class="tool-btn primary" id="btn-compress-go" style="width:100%;margin-top:10px;justify-content:center">
+                        <i class="fas fa-download"></i> Compress &amp; Download
+                    </button>
+                </div>
+            </div>
             <button class="tool-btn primary" id="btn-download"><i class="fas fa-download"></i> Download PDF</button>
         </div>
     </div>

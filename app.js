@@ -1823,6 +1823,117 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 
 // ===================== PWA =====================
 
+// ===================== COMPRESS & DOWNLOAD =====================
+
+const compressPopover = document.getElementById('compress-popover');
+const compressQualityInput = document.getElementById('compress-quality');
+const compressQualityVal = document.getElementById('compress-quality-val');
+
+document.getElementById('btn-compress').addEventListener('click', e => {
+    e.stopPropagation();
+    compressPopover.classList.toggle('show');
+});
+
+// Close popover on outside click
+document.addEventListener('click', e => {
+    if (!e.target.closest('.compress-wrap')) compressPopover.classList.remove('show');
+});
+
+compressQualityInput.addEventListener('input', () => {
+    compressQualityVal.textContent = compressQualityInput.value;
+});
+
+document.getElementById('btn-compress-go').addEventListener('click', async () => {
+    if (!state.pages.length) return;
+    compressPopover.classList.remove('show');
+    const quality = parseInt(compressQualityInput.value) / 100;
+
+    try {
+        const out = await PDFDocument.create();
+        const scale = quality < 0.4 ? 0.75 : quality < 0.7 ? 1.0 : 1.5;
+
+        for (let i = 0; i < state.pages.length; i++) {
+            showProgress(((i + 1) / state.pages.length) * 95, `Compressing page ${i + 1}/${state.pages.length}…`);
+            const pg = state.pages[i];
+            const srcData = pg.data || pg.srcFile;
+            const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+
+            // Render page to canvas at reduced scale
+            const pdf = await pdfjsLib.getDocument({ data: srcData.slice(0) }).promise;
+            const page = await pdf.getPage(srcIdx + 1);
+            const vp = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            canvas.width = vp.width; canvas.height = vp.height;
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+
+            // Apply any stored annotations on top
+            if (pg.annotations && pg.annotations.length) {
+                const ctx = canvas.getContext('2d');
+                pg.annotations.filter(a => a.type === 'draw').forEach(a => {
+                    ctx.save();
+                    ctx.strokeStyle = a.color; ctx.lineWidth = a.size * (scale / 1.5);
+                    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                    ctx.beginPath();
+                    a.points.forEach((p, j) => j === 0 ? ctx.moveTo(p.x * scale / 1.5, p.y * scale / 1.5) : ctx.lineTo(p.x * scale / 1.5, p.y * scale / 1.5));
+                    ctx.stroke();
+                    ctx.restore();
+                });
+            }
+
+            // Encode as JPEG at chosen quality
+            const jpegDataUrl = canvas.toDataURL('image/jpeg', quality);
+            const jpegBase64 = jpegDataUrl.split(',')[1];
+            const jpegBytes = Uint8Array.from(atob(jpegBase64), c => c.charCodeAt(0));
+
+            // Embed as a full-page JPEG image in a new PDF page
+            const jpegImage = await out.embedJpg(jpegBytes);
+            const { width: pw, height: ph } = jpegImage.scale(1 / scale);
+            const outPage = out.addPage([pw * scale / scale, ph * scale / scale]);
+
+            // Apply rotation
+            if (pg.rotation) outPage.setRotation(degrees(pg.rotation));
+
+            // Apply crop
+            let drawX = 0, drawY = 0, drawW = outPage.getWidth(), drawH = outPage.getHeight();
+            if (pg.crop) {
+                const scaleF = outPage.getWidth() / vp.width * scale;
+                drawX = pg.crop.x;
+                drawY = pg.crop.y;
+                drawW = pg.crop.w;
+                drawH = pg.crop.h;
+                outPage.setCropBox(drawX, drawY, drawW, drawH);
+                outPage.setMediaBox(drawX, drawY, drawW, drawH);
+            }
+
+            outPage.drawImage(jpegImage, {
+                x: 0, y: 0,
+                width: outPage.getWidth(),
+                height: outPage.getHeight(),
+            });
+        }
+
+        showProgress(98, 'Saving compressed PDF…');
+        const bytes = await out.save({ useObjectStreams: true });
+
+        const names = [...new Set(state.pages.map(p => p.srcName))];
+        let fname = 'compressed.pdf';
+        if (names.length === 1) fname = names[0].replace('.pdf', '') + '_compressed.pdf';
+
+        downloadBlob(bytes, fname);
+        showProgress(100, 'Done!');
+
+        // Show size savings in toast
+        const totalOrigKB = state.pages.reduce((s, p) => s + ((p.data || p.srcFile).byteLength || 0), 0) / 1024;
+        const newKB = bytes.byteLength / 1024;
+        const saving = Math.round((1 - newKB / totalOrigKB) * 100);
+        toast(`Compressed! ${saving > 0 ? saving + '% smaller' : 'Downloaded'} (${(newKB / 1024).toFixed(1)} MB)`);
+    } catch (err) {
+        console.error(err);
+        toast('Error: ' + err.message);
+    }
+    setTimeout(hideProgress, 1500);
+});
+
 // ===================== PWA INSTALL =====================
 
 let deferredPrompt;
