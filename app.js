@@ -23,31 +23,83 @@ const state = {
 // Key: "arrayBufferId:pageIdx" → canvas element (base render, no rotation/crop)
 // We assign a unique _id to each ArrayBuffer the first time we see it.
 
-const thumbCache = new Map();
-let _abIdCounter = 0;
-const _abIdMap = new WeakMap();
+// ── Buffer store: all PDF data kept as base64 strings (never detachable) ──
+// Encode binary → string on write, decode fresh Uint8Array on read.
 
-function getAbId(ab) {
-    if (_abIdMap.has(ab)) return _abIdMap.get(ab);
-    const id = ++_abIdCounter;
-    _abIdMap.set(ab, id);
+function bufToB64(buf) {
+    const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer || buf);
+    let bin = '';
+    // Process in chunks to avoid call stack overflow on large files
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(bin);
+}
+
+function b64ToBytes(b64) {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr; // fresh Uint8Array every time — cannot be detached
+}
+
+// Wrap a buffer for storage in state — returns a {_b64: string} object
+function storeBuffer(buf) {
+    if (buf && buf._b64) return buf; // already stored
+    return { _b64: bufToB64(buf) };
+}
+
+// Read a stored buffer — always returns a fresh Uint8Array
+function readBuffer(stored) {
+    if (stored && stored._b64) return b64ToBytes(stored._b64);
+    // Legacy: plain buffer — convert and return fresh copy
+    if (stored instanceof Uint8Array) {
+        const copy = new Uint8Array(stored.length);
+        copy.set(stored);
+        return copy;
+    }
+    if (stored instanceof ArrayBuffer) return new Uint8Array(stored.slice(0));
+    return new Uint8Array(stored);
+}
+
+// Cache keying: use the b64 string's first 32 chars as identity
+const _b64IdMap = new Map();
+let _b64IdCounter = 0;
+function getAbId(stored) {
+    const key = stored && stored._b64 ? stored._b64.slice(0, 32) : String(stored);
+    if (_b64IdMap.has(key)) return _b64IdMap.get(key);
+    const id = ++_b64IdCounter;
+    _b64IdMap.set(key, id);
     return id;
 }
 
-// PDF.js document cache — avoids re-parsing the same ArrayBuffer
+// PDF.js document cache
 const pdfDocCache = new Map();
 
-async function getPdfDoc(ab, password) {
-    const id = getAbId(ab);
+async function getPdfDoc(stored, password) {
+    const id = getAbId(stored);
     const cacheKey = id + (password ? ':' + password : '');
     if (pdfDocCache.has(cacheKey)) return pdfDocCache.get(cacheKey);
-    // Always pass Uint8Array to pdf.js — it handles both but Uint8Array is more reliable
-    const bytes = ab instanceof Uint8Array ? ab.slice() : new Uint8Array(ab);
+    const bytes = readBuffer(stored);
     const opts = { data: bytes };
     if (password) opts.password = password;
     const doc = await pdfjsLib.getDocument(opts).promise;
     pdfDocCache.set(cacheKey, doc);
     return doc;
+}
+
+function safeCopy(stored) { return readBuffer(stored); }
+async function safeLoad(stored, opts) {
+    return PDFDocument.load(readBuffer(stored), opts);
+}
+async function safeSave(doc, opts) {
+    const b64 = await doc.saveAsBase64(opts || {});
+    return b64ToBytes(b64);
+}
+async function safeSaveStored(doc, opts) {
+    const b64 = await doc.saveAsBase64(opts || {});
+    return storeBuffer(b64ToBytes(b64));
 }
 
 // Ask user for a PDF password — returns the password string or null (skip)
@@ -130,37 +182,25 @@ function safeCopy(buf) {
 // Pre-cache: load all unique source buffers into PDFDocument objects ONCE
 // Returns a Map: buffer_id → PDFDocument
 async function preloadSources(pages) {
-    const seen = new Map(); // id → PDFDocument
+    const seen = new Map();
     for (const pg of pages) {
-        const buf = pg.data || pg.srcFile;
-        const id = getAbId(buf);
+        const stored = pg.data || pg.srcFile;
+        const id = getAbId(stored);
         if (!seen.has(id)) {
-            seen.set(id, await PDFDocument.load(safeCopy(buf)));
+            seen.set(id, await safeLoad(stored));
         }
     }
     return seen;
 }
 
-async function safeLoad(buf, opts) {
-    return PDFDocument.load(safeCopy(buf), opts);
-}
-
-// Use saveAsBase64 to avoid detached ArrayBuffer issues with pdf-lib's WASM output
-async function safeSave(doc, opts) {
-    const b64 = await doc.saveAsBase64(opts || {});
-    const bin = atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    return arr;
-}
-
-function invalidateCache(ab) {
-    const id = getAbId(ab);
-    // Remove all thumb entries for this buffer
+function invalidateCache(stored) {
+    const id = getAbId(stored);
     for (const [k] of thumbCache) {
         if (k.startsWith(id + ':')) thumbCache.delete(k);
     }
-    pdfDocCache.delete(id);
+    for (const [k] of pdfDocCache) {
+        if (k.startsWith(String(id))) pdfDocCache.delete(k);
+    }
 }
 
 async function getThumbCanvas(srcData, srcPageIdx, maxW) {
@@ -359,7 +399,7 @@ async function loadFiles(files) {
         const { pdf, password } = result;
 
         // If password-protected, decrypt to a plain buffer so all later operations work
-        let workingData = data; // data is already an ArrayBuffer from FileReader
+        let workingData = storeBuffer(data); // stored as b64 — never detachable
         if (password) {
             try {
                 showProgress(((done + 1) / total) * 80, `Decrypting ${file.name}...`);
@@ -369,7 +409,7 @@ async function loadFiles(files) {
                 pages.forEach(p => decrypted.addPage(p));
                 const decBytes = await safeSave(decrypted);
                 // Store as Uint8Array for consistent identity — used as WeakMap key
-                workingData = decBytes.slice(0);
+                workingData = storeBuffer(decBytes);
             } catch(e) {
                 toast(`Could not decrypt ${file.name}: ${e.message}`);
                 done++; continue;
@@ -468,7 +508,7 @@ async function loadFiles(files) {
         showProgress(((done + 1) / total) * 80, `Converting ${file.name}…`);
         const bytes = await convertImageToPdfBytes(file);
         state.pages.push({
-            srcFile: bytes, srcName: file.name.replace(/\.[^.]+$/, '') + '.pdf',
+            srcFile: storeBuffer(bytes), srcName: file.name.replace(/\.[^.]+$/, '') + '.pdf',
             srcPageIdx: 0, data: null, rotation: 0, crop: null, annotations: [],
             formFields: [], formValues: {},
         });
@@ -1230,7 +1270,7 @@ document.getElementById('btn-resize-apply').addEventListener('click', async () =
 
         const bytes = await safeSave(newDoc);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes;
+        pg.data = storeBuffer(bytes);
         pg.srcPageIdx = 0;
     }
 
@@ -2109,7 +2149,7 @@ document.getElementById('btn-wm-apply').addEventListener('click', async () => {
         const newBuf = bytes;
         // Invalidate old cache if page had custom data
         if (pg.data) invalidateCache(pg.data);
-        pg.data = newBuf;
+        pg.data = storeBuffer(newBuf);
         pg.srcPageIdx = 0;
     }
 
@@ -2201,7 +2241,7 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                     single.addPage(copied);
                     const singleBytes = await safeSave(single);
                     if (pg.data) invalidateCache(pg.data);
-                    pg.data = singleBytes;
+                    pg.data = storeBuffer(singleBytes);
                     pg.srcPageIdx = 0;
                     pg.formFields = []; // Form is now flattened
                     pg.formValues = {};
@@ -2849,7 +2889,7 @@ document.getElementById('btn-insert-blank').addEventListener('click', async () =
     const blankBytes = await safeSave(blankDoc);
 
     const blankPg = {
-        srcFile: blankBytes, srcName: 'blank.pdf', srcPageIdx: 0,
+        srcFile: storeBuffer(blankBytes), srcName: 'blank.pdf', srcPageIdx: 0,
         data: null, rotation: 0, crop: null, annotations: [],
         formFields: [], formValues: {},
     };
@@ -3071,7 +3111,7 @@ document.getElementById('btn-stamp-apply').addEventListener('click', async () =>
         outPage.drawImage(jpegImg, { x: 0, y: 0, width: baseVp.width, height: baseVp.height });
         const newBytes = await safeSave(newDoc);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = newBytes; pg.srcPageIdx = 0;
+        pg.data = storeBuffer(newBytes); pg.srcPageIdx = 0;
         invalidateCache(pg.data);
     }
 
@@ -3130,7 +3170,7 @@ document.getElementById('btn-pn-apply').addEventListener('click', async () => {
         single.addPage(copied);
         const bytes = await safeSave(single);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes; pg.srcPageIdx = 0;
+        pg.data = storeBuffer(bytes); pg.srcPageIdx = 0;
     }
 
     hideProgress();
@@ -3191,7 +3231,7 @@ document.getElementById('btn-hf-apply').addEventListener('click', async () => {
         single.addPage(copied);
         const bytes = await safeSave(single);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes; pg.srcPageIdx = 0;
+        pg.data = storeBuffer(bytes); pg.srcPageIdx = 0;
     }
 
     hideProgress();
@@ -3242,7 +3282,7 @@ document.getElementById('btn-pw-apply').addEventListener('click', async () => {
                 single.addPage(copied);
                 const bytes = await safeSave(single);
                 if (pg.data) invalidateCache(pg.data);
-                pg.data = bytes; pg.srcPageIdx = 0;
+                pg.data = storeBuffer(bytes); pg.srcPageIdx = 0;
             }
             hideProgress();
             toast('Password removed');
@@ -3362,7 +3402,7 @@ document.getElementById('btn-redact-apply').addEventListener('click', async () =
     single.addPage(copied);
     const bytes = await safeSave(single);
     if (pg.data) invalidateCache(pg.data);
-    pg.data = bytes; pg.srcPageIdx = 0;
+    pg.data = storeBuffer(bytes); pg.srcPageIdx = 0;
     invalidateCache(pg.data);
 
     showProgress(100, 'Done!');
