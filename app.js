@@ -37,12 +37,75 @@ function getAbId(ab) {
 // PDF.js document cache — avoids re-parsing the same ArrayBuffer
 const pdfDocCache = new Map();
 
-async function getPdfDoc(ab) {
+async function getPdfDoc(ab, password) {
     const id = getAbId(ab);
-    if (pdfDocCache.has(id)) return pdfDocCache.get(id);
-    const doc = await pdfjsLib.getDocument({ data: ab.slice(0) }).promise;
-    pdfDocCache.set(id, doc);
+    const cacheKey = id + (password ? ':' + password : '');
+    if (pdfDocCache.has(cacheKey)) return pdfDocCache.get(cacheKey);
+    const opts = { data: ab.slice(0) };
+    if (password) opts.password = password;
+    const doc = await pdfjsLib.getDocument(opts).promise;
+    pdfDocCache.set(cacheKey, doc);
     return doc;
+}
+
+// Ask user for a PDF password — returns the password string or null (skip)
+function promptPdfPassword(filename, isRetry) {
+    return new Promise(resolve => {
+        document.getElementById('pdf-pw-filename').textContent = `"${filename}" is password protected`;
+        document.getElementById('pdf-pw-input').value = '';
+        document.getElementById('pdf-pw-error').style.display = isRetry ? 'block' : 'none';
+        document.getElementById('modal-pdf-password').classList.add('on');
+        requestAnimationFrame(() => document.getElementById('pdf-pw-input').focus());
+
+        function submit() {
+            cleanup();
+            resolve(document.getElementById('pdf-pw-input').value || null);
+        }
+        function skip() {
+            cleanup();
+            resolve(null);
+        }
+        function onKey(e) {
+            if (e.key === 'Enter') submit();
+        }
+
+        function cleanup() {
+            document.getElementById('modal-pdf-password').classList.remove('on');
+            document.getElementById('btn-pdf-pw-ok').removeEventListener('click', submit);
+            document.getElementById('btn-pdf-pw-skip').removeEventListener('click', skip);
+            document.getElementById('pdf-pw-input').removeEventListener('keydown', onKey);
+        }
+
+        document.getElementById('btn-pdf-pw-ok').addEventListener('click', submit);
+        document.getElementById('btn-pdf-pw-skip').addEventListener('click', skip);
+        document.getElementById('pdf-pw-input').addEventListener('keydown', onKey);
+    });
+}
+
+// Load a PDF with automatic password prompting
+async function loadPdfWithPassword(data, filename) {
+    let password = undefined;
+    let isRetry = false;
+    while (true) {
+        try {
+            const pdf = await getPdfDoc(data, password);
+            return { pdf, password }; // success
+        } catch (err) {
+            // PDF.js throws PasswordException for encrypted files
+            const isPasswordError = err && (
+                err.name === 'PasswordException' ||
+                err.code === 1 || // NEED_PASSWORD
+                err.code === 2 || // INCORRECT_PASSWORD
+                (err.message && err.message.toLowerCase().includes('password'))
+            );
+            if (!isPasswordError) throw err; // other error — propagate
+
+            // Prompt user
+            password = await promptPdfPassword(filename, isRetry);
+            if (!password) return null; // user skipped
+            isRetry = true;
+        }
+    }
 }
 
 function invalidateCache(ab) {
@@ -243,12 +306,33 @@ async function loadFiles(files) {
     for (const file of pdfFiles) {
         showProgress(((done + 1) / total) * 80, `Loading ${file.name}...`);
         const data = await readFile(file);
-        const pdf = await getPdfDoc(data);
+
+        // Try loading — will prompt for password if encrypted
+        const result = await loadPdfWithPassword(data, file.name);
+        if (!result) { done++; continue; } // user skipped this file
+        const { pdf, password } = result;
+
+        // If password-protected, decrypt to a plain buffer so all later operations work
+        let workingData = data;
+        if (password) {
+            try {
+                showProgress(((done + 1) / total) * 80, `Decrypting ${file.name}...`);
+                const encrypted = await PDFDocument.load(data, { password, ignoreEncryption: false });
+                const decrypted = await PDFDocument.create();
+                const pages = await decrypted.copyPages(encrypted, encrypted.getPageIndices());
+                pages.forEach(p => decrypted.addPage(p));
+                const decBytes = await decrypted.save();
+                workingData = decBytes.buffer;
+            } catch(e) {
+                toast(`Could not decrypt ${file.name}: ${e.message}`);
+                done++; continue;
+            }
+        }
 
         // Detect form fields via pdf-lib
         let formFieldsByPage = {};
         try {
-            const pdfLibDoc = await PDFDocument.load(data, { ignoreEncryption: true });
+            const pdfLibDoc = await PDFDocument.load(workingData, { ignoreEncryption: true });
             const form = pdfLibDoc.getForm();
             const fields = form.getFields();
             for (const field of fields) {
@@ -321,7 +405,7 @@ async function loadFiles(files) {
 
         for (let pi = 0; pi < pdf.numPages; pi++) {
             state.pages.push({
-                srcFile: data, srcName: file.name, srcPageIdx: pi,
+                srcFile: workingData, srcName: file.name, srcPageIdx: pi,
                 data: null, rotation: 0, crop: null, annotations: [],
                 formFields: formFieldsByPage[pi] || [],
                 formValues: {},
@@ -2203,237 +2287,256 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 });
 
 // ===================== PDF ENCRYPTION (RC4-128, Standard Rev 3) =====================
-// Implements PDF 1.4 Standard Security Handler Rev 3 / RC4-128
-// Applied as a post-processing step on raw PDF bytes from pdf-lib
+// Pure byte-level implementation — never converts binary data to strings.
 
 async function encryptPdf(pdfBytes, userPassword, ownerPassword) {
-    // RC4 stream cipher
-    function rc4(key, data) {
-        const S = Uint8Array.from({length:256}, (_,i) => i);
-        let j = 0;
-        for (let i = 0; i < 256; i++) {
+    const data = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+
+    // ── RC4 ────────────────────────────────────────────────────────────
+    function rc4(key, input) {
+        const S = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) S[i] = i;
+        for (let i = 0, j = 0; i < 256; i++) {
             j = (j + S[i] + key[i % key.length]) & 0xff;
             [S[i], S[j]] = [S[j], S[i]];
         }
-        const out = new Uint8Array(data.length);
-        let a = 0, b = 0;
-        for (let i = 0; i < data.length; i++) {
+        const out = new Uint8Array(input.length);
+        for (let i = 0, a = 0, b = 0; i < input.length; i++) {
             a = (a + 1) & 0xff; b = (b + S[a]) & 0xff;
             [S[a], S[b]] = [S[b], S[a]];
-            out[i] = data[i] ^ S[(S[a] + S[b]) & 0xff];
+            out[i] = input[i] ^ S[(S[a] + S[b]) & 0xff];
         }
         return out;
     }
 
-    // MD5 hash (needed for key derivation)
-    async function md5(data) {
-        // Use crypto.subtle with a trick: MD5 isn't natively supported,
-        // so we implement it inline
-        return md5Pure(data);
-    }
-
-    function md5Pure(input) {
-        function safeAdd(x, y) { const lsw=(x&0xffff)+(y&0xffff); return (((x>>16)+(y>>16)+(lsw>>16))<<16)|(lsw&0xffff); }
-        function bitRotateLeft(num, cnt) { return (num<<cnt)|(num>>>(32-cnt)); }
-        function md5cmn(q,a,b,x,s,t) { return safeAdd(bitRotateLeft(safeAdd(safeAdd(a,q),safeAdd(x,t)),s),b); }
-        function md5ff(a,b,c,d,x,s,t){return md5cmn((b&c)|(~b&d),a,b,x,s,t);}
-        function md5gg(a,b,c,d,x,s,t){return md5cmn((b&d)|(c&~d),a,b,x,s,t);}
-        function md5hh(a,b,c,d,x,s,t){return md5cmn(b^c^d,a,b,x,s,t);}
-        function md5ii(a,b,c,d,x,s,t){return md5cmn(c^(b|~d),a,b,x,s,t);}
-        const arr = typeof input === 'string'
-            ? new TextEncoder().encode(input)
-            : input;
-        const len8 = arr.length;
-        const nblk = ((len8+8)>>6)+1;
-        const blks = new Array(nblk*16).fill(0);
-        for(let i=0;i<len8;i++) blks[i>>2]|=arr[i]<<((i%4)*8);
-        blks[len8>>2]|=0x80<<((len8%4)*8);
-        blks[nblk*16-2]=len8*8;
+    // ── MD5 (pure JS, operates on Uint8Array) ──────────────────────────
+    function md5(input) {
+        const sa=(x,y)=>{const l=(x&0xffff)+(y&0xffff);return(((x>>16)+(y>>16)+(l>>16))<<16)|(l&0xffff);};
+        const rl=(n,c)=>(n<<c)|(n>>>(32-c));
+        const cm=(q,a,b,x,s,t)=>sa(rl(sa(sa(a,q),sa(x,t)),s),b);
+        const ff=(a,b,c,d,x,s,t)=>cm((b&c)|(~b&d),a,b,x,s,t);
+        const gg=(a,b,c,d,x,s,t)=>cm((b&d)|(c&~d),a,b,x,s,t);
+        const hh=(a,b,c,d,x,s,t)=>cm(b^c^d,a,b,x,s,t);
+        const ii=(a,b,c,d,x,s,t)=>cm(c^(b|~d),a,b,x,s,t);
+        const len=input.length, nblk=((len+8)>>6)+1;
+        const blks=new Int32Array(nblk*16);
+        for(let i=0;i<len;i++) blks[i>>2]|=input[i]<<((i%4)*8);
+        blks[len>>2]|=0x80<<((len%4)*8);
+        blks[nblk*16-2]=len*8;
         let a=1732584193,b=-271733879,c=-1732584194,d=271733878;
         for(let i=0;i<blks.length;i+=16){
-            const oa=a,ob=b,oc=c,od=d;
-            a=md5ff(a,b,c,d,blks[i],7,-680876936);d=md5ff(d,a,b,c,blks[i+1],12,-389564586);c=md5ff(c,d,a,b,blks[i+2],17,606105819);b=md5ff(b,c,d,a,blks[i+3],22,-1044525330);
-            a=md5ff(a,b,c,d,blks[i+4],7,-176418897);d=md5ff(d,a,b,c,blks[i+5],12,1200080426);c=md5ff(c,d,a,b,blks[i+6],17,-1473231341);b=md5ff(b,c,d,a,blks[i+7],22,-45705983);
-            a=md5ff(a,b,c,d,blks[i+8],7,1770035416);d=md5ff(d,a,b,c,blks[i+9],12,-1958414417);c=md5ff(c,d,a,b,blks[i+10],17,-42063);b=md5ff(b,c,d,a,blks[i+11],22,-1990404162);
-            a=md5ff(a,b,c,d,blks[i+12],7,1804603682);d=md5ff(d,a,b,c,blks[i+13],12,-40341101);c=md5ff(c,d,a,b,blks[i+14],17,-1502002290);b=md5ff(b,c,d,a,blks[i+15],22,1236535329);
-            a=md5gg(a,b,c,d,blks[i+1],5,-165796510);d=md5gg(d,a,b,c,blks[i+6],9,-1069501632);c=md5gg(c,d,a,b,blks[i+11],14,643717713);b=md5gg(b,c,d,a,blks[i],20,-373897302);
-            a=md5gg(a,b,c,d,blks[i+5],5,-701558691);d=md5gg(d,a,b,c,blks[i+10],9,38016083);c=md5gg(c,d,a,b,blks[i+15],14,-660478335);b=md5gg(b,c,d,a,blks[i+4],20,-405537848);
-            a=md5gg(a,b,c,d,blks[i+9],5,568446438);d=md5gg(d,a,b,c,blks[i+14],9,-1019803690);c=md5gg(c,d,a,b,blks[i+3],14,-187363961);b=md5gg(b,c,d,a,blks[i+8],20,1163531501);
-            a=md5gg(a,b,c,d,blks[i+13],5,-1444681467);d=md5gg(d,a,b,c,blks[i+2],9,-51403784);c=md5gg(c,d,a,b,blks[i+7],14,1735328473);b=md5gg(b,c,d,a,blks[i+12],20,-1926607734);
-            a=md5hh(a,b,c,d,blks[i+5],4,-378558);d=md5hh(d,a,b,c,blks[i+8],11,-2022574463);c=md5hh(c,d,a,b,blks[i+11],16,1839030562);b=md5hh(b,c,d,a,blks[i+14],23,-35309556);
-            a=md5hh(a,b,c,d,blks[i+1],4,-1530992060);d=md5hh(d,a,b,c,blks[i+4],11,1272893353);c=md5hh(c,d,a,b,blks[i+7],16,-155497632);b=md5hh(b,c,d,a,blks[i+10],23,-1094730640);
-            a=md5hh(a,b,c,d,blks[i+13],4,681279174);d=md5hh(d,a,b,c,blks[i],11,-358537222);c=md5hh(c,d,a,b,blks[i+3],16,-722521979);b=md5hh(b,c,d,a,blks[i+6],23,76029189);
-            a=md5hh(a,b,c,d,blks[i+9],4,-640364487);d=md5hh(d,a,b,c,blks[i+12],11,-421815835);c=md5hh(c,d,a,b,blks[i+15],16,530742520);b=md5hh(b,c,d,a,blks[i+2],23,-995338651);
-            a=md5ii(a,b,c,d,blks[i],6,-198630844);d=md5ii(d,a,b,c,blks[i+7],10,1126891415);c=md5ii(c,d,a,b,blks[i+14],15,-1416354905);b=md5ii(b,c,d,a,blks[i+5],21,-57434055);
-            a=md5ii(a,b,c,d,blks[i+12],6,1700485571);d=md5ii(d,a,b,c,blks[i+3],10,-1894986606);c=md5ii(c,d,a,b,blks[i+10],15,-1051523);b=md5ii(b,c,d,a,blks[i+1],21,-2054922799);
-            a=md5ii(a,b,c,d,blks[i+8],6,1873313359);d=md5ii(d,a,b,c,blks[i+15],10,-30611744);c=md5ii(c,d,a,b,blks[i+6],15,-1560198380);b=md5ii(b,c,d,a,blks[i+13],21,1309151649);
-            a=md5ii(a,b,c,d,blks[i+4],6,-145523070);d=md5ii(d,a,b,c,blks[i+11],10,-1120210379);c=md5ii(c,d,a,b,blks[i+2],15,718787259);b=md5ii(b,c,d,a,blks[i+9],21,-343485551);
-            a=safeAdd(a,oa);b=safeAdd(b,ob);c=safeAdd(c,oc);d=safeAdd(d,od);
+            const [oa,ob,oc,od]=[a,b,c,d];
+            a=ff(a,b,c,d,blks[i+0],7,-680876936);d=ff(d,a,b,c,blks[i+1],12,-389564586);c=ff(c,d,a,b,blks[i+2],17,606105819);b=ff(b,c,d,a,blks[i+3],22,-1044525330);
+            a=ff(a,b,c,d,blks[i+4],7,-176418897);d=ff(d,a,b,c,blks[i+5],12,1200080426);c=ff(c,d,a,b,blks[i+6],17,-1473231341);b=ff(b,c,d,a,blks[i+7],22,-45705983);
+            a=ff(a,b,c,d,blks[i+8],7,1770035416);d=ff(d,a,b,c,blks[i+9],12,-1958414417);c=ff(c,d,a,b,blks[i+10],17,-42063);b=ff(b,c,d,a,blks[i+11],22,-1990404162);
+            a=ff(a,b,c,d,blks[i+12],7,1804603682);d=ff(d,a,b,c,blks[i+13],12,-40341101);c=ff(c,d,a,b,blks[i+14],17,-1502002290);b=ff(b,c,d,a,blks[i+15],22,1236535329);
+            a=gg(a,b,c,d,blks[i+1],5,-165796510);d=gg(d,a,b,c,blks[i+6],9,-1069501632);c=gg(c,d,a,b,blks[i+11],14,643717713);b=gg(b,c,d,a,blks[i+0],20,-373897302);
+            a=gg(a,b,c,d,blks[i+5],5,-701558691);d=gg(d,a,b,c,blks[i+10],9,38016083);c=gg(c,d,a,b,blks[i+15],14,-660478335);b=gg(b,c,d,a,blks[i+4],20,-405537848);
+            a=gg(a,b,c,d,blks[i+9],5,568446438);d=gg(d,a,b,c,blks[i+14],9,-1019803690);c=gg(c,d,a,b,blks[i+3],14,-187363961);b=gg(b,c,d,a,blks[i+8],20,1163531501);
+            a=gg(a,b,c,d,blks[i+13],5,-1444681467);d=gg(d,a,b,c,blks[i+2],9,-51403784);c=gg(c,d,a,b,blks[i+7],14,1735328473);b=gg(b,c,d,a,blks[i+12],20,-1926607734);
+            a=hh(a,b,c,d,blks[i+5],4,-378558);d=hh(d,a,b,c,blks[i+8],11,-2022574463);c=hh(c,d,a,b,blks[i+11],16,1839030562);b=hh(b,c,d,a,blks[i+14],23,-35309556);
+            a=hh(a,b,c,d,blks[i+1],4,-1530992060);d=hh(d,a,b,c,blks[i+4],11,1272893353);c=hh(c,d,a,b,blks[i+7],16,-155497632);b=hh(b,c,d,a,blks[i+10],23,-1094730640);
+            a=hh(a,b,c,d,blks[i+13],4,681279174);d=hh(d,a,b,c,blks[i+0],11,-358537222);c=hh(c,d,a,b,blks[i+3],16,-722521979);b=hh(b,c,d,a,blks[i+6],23,76029189);
+            a=hh(a,b,c,d,blks[i+9],4,-640364487);d=hh(d,a,b,c,blks[i+12],11,-421815835);c=hh(c,d,a,b,blks[i+15],16,530742520);b=hh(b,c,d,a,blks[i+2],23,-995338651);
+            a=ii(a,b,c,d,blks[i+0],6,-198630844);d=ii(d,a,b,c,blks[i+7],10,1126891415);c=ii(c,d,a,b,blks[i+14],15,-1416354905);b=ii(b,c,d,a,blks[i+5],21,-57434055);
+            a=ii(a,b,c,d,blks[i+12],6,1700485571);d=ii(d,a,b,c,blks[i+3],10,-1894986606);c=ii(c,d,a,b,blks[i+10],15,-1051523);b=ii(b,c,d,a,blks[i+1],21,-2054922799);
+            a=ii(a,b,c,d,blks[i+8],6,1873313359);d=ii(d,a,b,c,blks[i+15],10,-30611744);c=ii(c,d,a,b,blks[i+6],15,-1560198380);b=ii(b,c,d,a,blks[i+13],21,1309151649);
+            a=ii(a,b,c,d,blks[i+4],6,-145523070);d=ii(d,a,b,c,blks[i+11],10,-1120210379);c=ii(c,d,a,b,blks[i+2],15,718787259);b=ii(b,c,d,a,blks[i+9],21,-343485551);
+            a=sa(a,oa);b=sa(b,ob);c=sa(c,oc);d=sa(d,od);
         }
-        const res = new Uint8Array(16);
-        [a,b,c,d].forEach((v,i)=>{ res[i*4]=v&0xff; res[i*4+1]=(v>>8)&0xff; res[i*4+2]=(v>>16)&0xff; res[i*4+3]=(v>>24)&0xff; });
-        return res;
+        const r=new Uint8Array(16);
+        [a,b,c,d].forEach((v,i)=>{r[i*4]=v&0xff;r[i*4+1]=(v>>8)&0xff;r[i*4+2]=(v>>16)&0xff;r[i*4+3]=(v>>24)&0xff;});
+        return r;
     }
 
-    // PDF padding string (PDF spec §3.5.2)
-    const PAD = new Uint8Array([0x28,0xbf,0x4e,0x5e,0x4e,0x75,0x8a,0x41,0x64,0x00,0x4e,0x56,0xff,0xfa,0x01,0x08,0x2e,0x2e,0x00,0xb6,0xd0,0x68,0x3e,0x80,0x2f,0x0c,0xa9,0xfe,0x64,0x53,0x69,0x7a]);
+    // ── PDF padding string ─────────────────────────────────────────────
+    const PAD = new Uint8Array([0x28,0xBF,0x4E,0x5E,0x4E,0x75,0x8A,0x41,0x64,0x00,0x4E,0x56,0xFF,0xFA,0x01,0x08,0x2E,0x2E,0x00,0xB6,0xD0,0x68,0x3E,0x80,0x2F,0x0C,0xA9,0xFE,0x64,0x53,0x69,0x7A]);
+    const toHex = arr => Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('');
 
-    function pwToKey(pw) {
-        const enc = new TextEncoder().encode(pw.slice(0, 32));
-        const padded = new Uint8Array(32);
-        padded.set(enc.slice(0, 32));
-        padded.set(PAD.slice(0, 32 - enc.length), enc.length);
-        return padded;
+    function pwdBytes(pw) {
+        const enc = new TextEncoder().encode((pw||'').slice(0,32));
+        const out = new Uint8Array(32);
+        out.set(enc.slice(0,32));
+        out.set(PAD.slice(0, 32-enc.length), enc.length);
+        return out;
     }
 
-    // Generate a random file ID
+    // Permissions (Rev3): allow all except restrict-printing, low-quality
+    const P = -3904;
+    const Pbytes = new Uint8Array([P&0xff,(P>>8)&0xff,(P>>16)&0xff,(P>>24)&0xff]);
     const fileId = crypto.getRandomValues(new Uint8Array(16));
-    const fileIdHex = Array.from(fileId).map(b => b.toString(16).padStart(2,'0')).join('');
 
-    // Compute owner key
-    const oPadded = pwToKey(ownerPassword || userPassword);
-    let oDigest = md5Pure(oPadded);
-    for (let i = 0; i < 50; i++) oDigest = md5Pure(oDigest);
-    const oKey = oDigest.slice(0, 16);
-    const uPadded = pwToKey(userPassword);
-    let oValue = rc4(oKey, uPadded);
-    for (let i = 1; i <= 19; i++) {
-        const k = oKey.map(b => b ^ i);
-        oValue = rc4(k, oValue);
+    // Owner key & O entry
+    const oPwd = pwdBytes(ownerPassword || userPassword);
+    let oHash = md5(oPwd);
+    for (let i=0;i<50;i++) oHash=md5(oHash);
+    const oKey16 = oHash.slice(0,16);
+    const uPwd = pwdBytes(userPassword);
+    let Oval = rc4(oKey16, uPwd);
+    for (let i=1;i<=19;i++) Oval=rc4(oKey16.map(b=>b^i), Oval);
+
+    // Encryption key
+    function makeEncKey(pwBytes) {
+        const buf = new Uint8Array(pwBytes.length + Oval.length + 4 + fileId.length);
+        buf.set(pwBytes); buf.set(Oval,32); buf.set(Pbytes,64); buf.set(fileId,68);
+        let h = md5(buf);
+        for (let i=0;i<50;i++) h=md5(h);
+        return h; // 16 bytes = 128-bit
     }
-    const O = oValue;
+    const encKey = makeEncKey(uPwd);
 
-    // Compute encryption key
-    function computeEncKey(pwBytes) {
-        // MD5(pad(pw) + O + P + fileId)
-        const P = -3904; // permissions: allow everything except print quality, mod, annots
-        const pBytes = new Uint8Array(4);
-        const pv = P >>> 0;
-        pBytes[0] = pv & 0xff; pBytes[1] = (pv >> 8) & 0xff;
-        pBytes[2] = (pv >> 16) & 0xff; pBytes[3] = (pv >> 24) & 0xff;
-        const buf = new Uint8Array(pwBytes.length + O.length + 4 + fileId.length);
-        buf.set(pwBytes); buf.set(O, pwBytes.length);
-        buf.set(pBytes, pwBytes.length + O.length);
-        buf.set(fileId, pwBytes.length + O.length + 4);
-        let h = md5Pure(buf);
-        for (let i = 0; i < 50; i++) h = md5Pure(h);
-        return h; // 16 bytes = 128-bit key
-    }
+    // U entry (Rev3)
+    const uInput = new Uint8Array([...PAD,...fileId]);
+    let Uval = rc4(encKey, md5(uInput));
+    for (let i=1;i<=19;i++) Uval=rc4(encKey.map(b=>b^i), Uval);
+    const Uentry = new Uint8Array(32); Uentry.set(Uval);
 
-    const encKey = computeEncKey(uPadded);
-
-    // Compute U value (Rev 3)
-    const uHash = md5Pure(new Uint8Array([...PAD, ...fileId]));
-    let uValue = rc4(encKey, uHash);
-    for (let i = 1; i <= 19; i++) {
-        const k = encKey.map(b => b ^ i);
-        uValue = rc4(k, uValue);
-    }
-    // Pad U to 32 bytes
-    const U = new Uint8Array(32);
-    U.set(uValue);
-
-    const toHex = (arr) => Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('');
-
-    // Now parse the PDF and re-encrypt all stream objects
-    // We work on the raw bytes, finding stream...endstream pairs
-    const text = new TextDecoder('latin1').decode(pdfBytes);
-
-    // Build encryption dictionary to add to PDF
-    const encryptDict = [
-        '<< /Filter /Standard',
-        '/V 2 /R 3 /Length 128',
-        '/P -3904',
-        '/O <' + toHex(O) + '>',
-        '/U <' + toHex(U) + '>',
-        '>>'
-    ].join('\n');
-
-    // We need to inject the Encrypt dict and update the trailer
-    // Strategy: append encrypt object, update xref, update trailer
-    // Find the next free object number
-    const objNums = [...text.matchAll(/^(\d+) 0 obj/gm)].map(m => parseInt(m[1]));
-    const nextObj = Math.max(...objNums, 0) + 1;
-
-    // Find the startxref position and trailer dict
-    const startxrefMatch = text.lastIndexOf('startxref');
-    if (startxrefMatch === -1) throw new Error('Invalid PDF: no startxref');
-
-    // Encrypt all streams
-    function encryptStream(data, objNum, genNum) {
-        // Per-object key = MD5(encKey + objNum(3 bytes LE) + genNum(2 bytes LE))
-        const keyBuf = new Uint8Array(encKey.length + 5);
-        keyBuf.set(encKey);
-        keyBuf[encKey.length] = objNum & 0xff;
-        keyBuf[encKey.length + 1] = (objNum >> 8) & 0xff;
-        keyBuf[encKey.length + 2] = (objNum >> 16) & 0xff;
-        keyBuf[encKey.length + 3] = genNum & 0xff;
-        keyBuf[encKey.length + 4] = (genNum >> 8) & 0xff;
-        const objKey = md5Pure(keyBuf).slice(0, Math.min(encKey.length + 5, 16));
-        return rc4(objKey, data);
+    // Per-object RC4 key
+    function objKey(objNum, genNum) {
+        const buf = new Uint8Array(encKey.length+5);
+        buf.set(encKey);
+        buf[encKey.length]=objNum&0xff; buf[encKey.length+1]=(objNum>>8)&0xff; buf[encKey.length+2]=(objNum>>16)&0xff;
+        buf[encKey.length+3]=genNum&0xff; buf[encKey.length+4]=(genNum>>8)&0xff;
+        return md5(buf).slice(0, Math.min(encKey.length+5,16));
     }
 
-    // Parse objects and encrypt streams
-    const enc = new TextEncoder();
-    const dec = new TextDecoder('latin1');
-    let result = new Uint8Array(pdfBytes.length * 2);
-    let rLen = 0;
+    // ── Byte-level PDF parser ──────────────────────────────────────────
+    // Find all "N G obj" positions, then find their stream, encrypt it in place.
 
-    function appendBytes(arr) {
-        if (rLen + arr.length > result.length) {
-            const newR = new Uint8Array(result.length * 2);
-            newR.set(result.subarray(0, rLen));
-            result = newR;
+    function findBytes(haystack, needle, start=0) {
+        outer: for (let i=start; i<=haystack.length-needle.length; i++) {
+            for (let j=0;j<needle.length;j++) if (haystack[i+j]!==needle[j]) continue outer;
+            return i;
         }
-        result.set(arr, rLen);
-        rLen += arr.length;
+        return -1;
     }
 
-    // Process the PDF byte by byte isn't feasible for large files
-    // Use regex-based approach on the text representation then convert back
-    let modified = text;
-
-    // Find all stream objects and encrypt their content
-    const streamRe = /(\d+) 0 obj[\s\S]*?stream\r?\n([\s\S]*?)\r?\nendstream/g;
-    let offset = 0;
-    let output = '';
-    let match;
-    streamRe.lastIndex = 0;
-
-    while ((match = streamRe.exec(text)) !== null) {
-        const objNum = parseInt(match[1]);
-        const streamContent = match[2];
-        // Get raw bytes of stream content
-        const streamBytes = new Uint8Array(streamContent.length);
-        for (let i = 0; i < streamContent.length; i++) streamBytes[i] = streamContent.charCodeAt(i) & 0xff;
-        const encrypted = encryptStream(streamBytes, objNum, 0);
-        const encStr = Array.from(encrypted).map(b => String.fromCharCode(b)).join('');
-        output += text.slice(offset, match.index + match[0].indexOf('stream\n') + 7);
-        output += encStr + '\nendstream';
-        offset = match.index + match[0].length;
-    }
-    output += text.slice(offset);
-
-    // Inject Encrypt object and update trailer
-    const encryptObj = `\n${nextObj} 0 obj\n${encryptDict}\nendobj\n`;
-    const trailerMatch = output.match(/trailer\s*<<([\s\S]*?)>>/);
-    if (trailerMatch) {
-        let trailerContent = trailerMatch[1];
-        // Add /Encrypt reference and update /ID
-        trailerContent = trailerContent.replace(/\/Encrypt\s+\d+ 0 R/g, '');
-        trailerContent += `\n/Encrypt ${nextObj} 0 R\n/ID [<${fileIdHex}><${fileIdHex}>]`;
-        output = output.replace(/trailer\s*<<[\s\S]*?>>/, `trailer\n<<${trailerContent}>>`);
+    function bytesEq(a,b,pos) {
+        for (let i=0;i<b.length;i++) if (a[pos+i]!==b[i]) return false;
+        return true;
     }
 
-    // Append the encrypt object before the final startxref
-    const lastStartxref = output.lastIndexOf('startxref');
-    const newStartxref = output.length + encryptObj.length;
-    output = output.slice(0, lastStartxref) + encryptObj + 'startxref\n' + newStartxref + '\n%%EOF\n';
+    const enc = new TextEncoder();
+    const STREAM = enc.encode('stream');
+    const ENDSTREAM = enc.encode('endstream');
+    const OBJ = enc.encode(' obj');
+    const EOL_LF = enc.encode('\n');
+    const EOL_CR = enc.encode('\r');
 
-    // Convert back to bytes
-    const finalBytes = new Uint8Array(output.length);
-    for (let i = 0; i < output.length; i++) finalBytes[i] = output.charCodeAt(i) & 0xff;
-    return finalBytes;
+    // Collect all object positions: scan for "N 0 obj"
+    const objects = []; // {objNum, genNum, start}
+    for (let i=0; i<data.length-6; i++) {
+        // Look for digit sequence followed by " N obj" pattern
+        if (data[i]>='0'.charCodeAt(0) && data[i]<='9'.charCodeAt(0)) {
+            // Try to parse "objNum genNum obj"
+            let j=i;
+            while (j<data.length && data[j]>=48 && data[j]<=57) j++;
+            if (j===i || data[j]!==32) continue;
+            const objNum=parseInt(new TextDecoder().decode(data.slice(i,j)));
+            j++;
+            let k=j;
+            while (k<data.length && data[k]>=48 && data[k]<=57) k++;
+            if (k===j || data[k]!==32) continue;
+            const genNum=parseInt(new TextDecoder().decode(data.slice(j,k)));
+            if (data[k+1]===111&&data[k+2]===98&&data[k+3]===106) { // 'o','b','j'
+                objects.push({objNum,genNum,start:i});
+                i=k+3;
+            }
+        }
+    }
+
+    // For each object, find its stream and encrypt it
+    const output = new Uint8Array(data); // copy — we'll modify in place
+
+    for (const obj of objects) {
+        const {objNum, genNum, start} = obj;
+        if (objNum === 0) continue;
+
+        // Find 'stream' keyword after obj
+        const nextObj = objects.find(o=>o.start>start);
+        const searchEnd = nextObj ? nextObj.start : data.length;
+        const sPos = findBytes(output, STREAM, start);
+        if (sPos === -1 || sPos >= searchEnd) continue;
+
+        // Verify character before 'stream' is \n or \r\n (PDF spec)
+        const afterStream = sPos + STREAM.length;
+        let contentStart;
+        if (output[afterStream] === 0x0D && output[afterStream+1] === 0x0A) contentStart = afterStream+2;
+        else if (output[afterStream] === 0x0A) contentStart = afterStream+1;
+        else continue; // not a valid stream keyword
+
+        // Find matching endstream
+        const esPos = findBytes(output, ENDSTREAM, contentStart);
+        if (esPos === -1 || esPos >= searchEnd) continue;
+
+        // Determine content end (before \r\n or \n before endstream)
+        let contentEnd = esPos;
+        if (output[contentEnd-1] === 0x0A) contentEnd--;
+        if (output[contentEnd-1] === 0x0D) contentEnd--;
+
+        const streamData = output.slice(contentStart, contentEnd);
+        const key = objKey(objNum, genNum);
+        const encrypted = rc4(key, streamData);
+        output.set(encrypted, contentStart);
+    }
+
+    // ── Inject /Encrypt dictionary and update trailer ──────────────────
+    // Find max object number
+    const maxObj = objects.reduce((m,o)=>Math.max(m,o.objNum),0);
+    const encObjNum = maxObj + 1;
+
+    const encDictStr = `${encObjNum} 0 obj\n<< /Filter /Standard /V 2 /R 3 /Length 128 /P ${P} /O <${toHex(Oval)}> /U <${toHex(Uentry)}> >>\nendobj\n`;
+    const encDictBytes = enc.encode(encDictStr);
+
+    // Find last startxref
+    let startxrefPos = -1;
+    for (let i=output.length-1; i>=0; i--) {
+        if (output[i]==='s'.charCodeAt(0) && bytesEq(output, enc.encode('startxref'), i)) {
+            startxrefPos = i; break;
+        }
+    }
+    if (startxrefPos === -1) throw new Error('No startxref found');
+
+    // Find trailer dict — scan backwards from startxref
+    const TRAILER = enc.encode('trailer');
+    let trailerPos = -1;
+    for (let i=startxrefPos; i>=0; i--) {
+        if (output[i]==='t'.charCodeAt(0) && bytesEq(output, TRAILER, i)) {
+            trailerPos=i; break;
+        }
+    }
+
+    // Build the new encrypt object + updated trailer section
+    // Find where trailer << >> ends
+    let trailerEnd = trailerPos;
+    let depth = 0;
+    for (let i=trailerPos; i<output.length; i++) {
+        if (output[i]===60&&output[i+1]===60) { depth++; i++; }
+        else if (output[i]===62&&output[i+1]===62) { depth--; i++; if (depth===0){trailerEnd=i+1;break;} }
+    }
+
+    const trailerSection = new TextDecoder('latin1').decode(output.slice(trailerPos, trailerEnd));
+    let newTrailer = trailerSection;
+    // Remove old /Encrypt if present
+    newTrailer = newTrailer.replace(/\/Encrypt\s+\d+\s+\d+\s+R/g, '');
+    // Remove old /ID if present
+    newTrailer = newTrailer.replace(/\/ID\s*\[[\s\S]*?\]/g, '');
+    // Insert /Encrypt ref and /ID before closing >>
+    newTrailer = newTrailer.replace(/>>\s*$/, `/Encrypt ${encObjNum} 0 R\n/ID [<${toHex(fileId)}><${toHex(fileId)}>]\n>>`);
+
+    const newTrailerBytes = enc.encode(newTrailer);
+    const newXrefOffset = output.slice(0,trailerPos).length + encDictBytes.length;
+
+    const suffix = enc.encode(`\nstartxref\n${newXrefOffset}\n%%EOF\n`);
+
+    // Assemble: original bytes up to trailerPos + encDictBytes + newTrailer + suffix
+    const result = new Uint8Array(trailerPos + encDictBytes.length + newTrailerBytes.length + suffix.length);
+    result.set(output.slice(0, trailerPos));
+    result.set(encDictBytes, trailerPos);
+    result.set(newTrailerBytes, trailerPos + encDictBytes.length);
+    result.set(suffix, trailerPos + encDictBytes.length + newTrailerBytes.length);
+
+    return result;
 }
 
 // ===================== PWA =====================
