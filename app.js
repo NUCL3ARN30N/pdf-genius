@@ -111,10 +111,34 @@ async function loadPdfWithPassword(data, filename) {
 }
 
 function safeCopy(buf) {
-    // Returns a fresh Uint8Array that won't detach the original buffer when passed to PDFDocument.load
-    if (buf instanceof Uint8Array) return buf.slice();
-    if (buf instanceof ArrayBuffer) return new Uint8Array(buf.slice(0));
+    // Use saveAsBase64 pattern: convert to base64 string first (never detachable),
+    // then back to Uint8Array. For ArrayBuffer/Uint8Array inputs, use FileReader approach.
+    if (buf instanceof Uint8Array) {
+        // Copy via DataView to avoid any buffer-sharing issues
+        const copy = new Uint8Array(new ArrayBuffer(buf.byteLength));
+        copy.set(buf);
+        return copy;
+    }
+    if (buf instanceof ArrayBuffer) {
+        const copy = new Uint8Array(new ArrayBuffer(buf.byteLength));
+        copy.set(new Uint8Array(buf));
+        return copy;
+    }
     return new Uint8Array(buf);
+}
+
+// Pre-cache: load all unique source buffers into PDFDocument objects ONCE
+// Returns a Map: buffer_id → PDFDocument
+async function preloadSources(pages) {
+    const seen = new Map(); // id → PDFDocument
+    for (const pg of pages) {
+        const buf = pg.data || pg.srcFile;
+        const id = getAbId(buf);
+        if (!seen.has(id)) {
+            seen.set(id, await PDFDocument.load(safeCopy(buf)));
+        }
+    }
+    return seen;
 }
 
 async function safeLoad(buf, opts) {
@@ -2169,7 +2193,9 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 
                 // Now update each page that used this source with its own single-page extract
                 for (const { pg, srcIdx } of info.pages) {
-                    const filledSrc = await safeLoad(filledBuf);
+                    // Each safeLoad needs its own independent copy of filledBuf
+                    const filledCopy = filledBuf.slice();
+                    const filledSrc = await safeLoad(filledCopy);
                     const single = await PDFDocument.create();
                     const [copied] = await single.copyPages(filledSrc, [srcIdx]);
                     single.addPage(copied);
@@ -2194,14 +2220,24 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         }
         const defaultFont = embeddedFonts[StandardFonts.Helvetica];
 
+        // Pre-load all unique source PDFs exactly once — avoids repeated loads from shared buffers
+        const srcCache = await preloadSources(state.pages);
+
         for (let i = 0; i < state.pages.length; i++) {
             showProgress(((i + 1) / state.pages.length) * 95, `Building page ${i + 1}/${state.pages.length}`);
             const pg = state.pages[i];
             const srcData = pg.data || pg.srcFile;
             const srcIdx = pg.data ? 0 : pg.srcPageIdx;
 
-            // Always create a safe copy — new Uint8Array(ab) can detach the original buffer
-            const src = await safeLoad(srcData);
+            let src;
+            try {
+                const srcId = getAbId(srcData);
+                src = srcCache.get(srcId);
+                if (!src) throw new Error('Source not preloaded');
+            } catch(loadErr) {
+                console.error(`load failed page ${i}:`, loadErr.message);
+                throw loadErr;
+            }
             const [copied] = await out.copyPages(src, [srcIdx]);
 
             if (pg.rotation) {
