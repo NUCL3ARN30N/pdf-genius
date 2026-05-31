@@ -2273,7 +2273,10 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         showProgress(97, 'Saving...');
         let bytes = await out.save();
         if (state.password) {
-            bytes = await encryptPdf(bytes, state.password.user, state.password.owner);
+            // Ensure we have a fresh, non-detached Uint8Array copy before encrypting
+            const freshBytes = new Uint8Array(bytes.length);
+            freshBytes.set(bytes);
+            bytes = await encryptPdf(freshBytes, state.password.user, state.password.owner);
         }
         const names = [...new Set(state.pages.map(p => p.srcName))];
         let fname = 'edited.pdf';
@@ -2295,7 +2298,15 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 // Uses the PDF xref table to locate streams precisely, then encrypts them.
 
 async function encryptPdf(pdfBytes, userPassword, ownerPassword) {
-    const data = pdfBytes instanceof Uint8Array ? pdfBytes.slice() : new Uint8Array(pdfBytes);
+    const data = (() => {
+        // Always make a fresh, non-detached copy
+        if (pdfBytes instanceof Uint8Array) {
+            const copy = new Uint8Array(pdfBytes.length);
+            copy.set(pdfBytes);
+            return copy;
+        }
+        return new Uint8Array(pdfBytes);
+    })();
     const dec = new TextDecoder('latin1');
     const enc = new TextEncoder();
     const toHex = arr => Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('');
@@ -3349,7 +3360,11 @@ async function buildSharePdf() {
     progressText.textContent = 'Saving…';
     progressFill.style.width = '95%';
     let bytes = await out.save();
-    if (state.password) bytes = await encryptPdf(bytes, state.password.user, state.password.owner);
+    if (state.password) {
+        const freshBytes = new Uint8Array(bytes.length);
+        freshBytes.set(bytes);
+        bytes = await encryptPdf(freshBytes, state.password.user, state.password.owner);
+    }
     progressFill.style.width = '100%';
     document.getElementById('share-building').style.display = 'none';
     return bytes;
