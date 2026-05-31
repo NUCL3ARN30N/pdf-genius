@@ -394,28 +394,34 @@ async function loadFiles(files) {
         showProgress(((done + 1) / total) * 80, `Loading ${file.name}...`);
         const data = await readFile(file);
 
+        // Store immediately as b64 — raw buffer from FileReader must not be touched after this
+        const storedData = storeBuffer(data);
+
         // Try loading — will prompt for password if encrypted
-        const result = await loadPdfWithPassword(data, file.name);
-        if (!result) { done++; continue; } // user skipped this file
+        const result = await loadPdfWithPassword(storedData, file.name);
+        if (!result) { done++; continue; }
         const { pdf, password } = result;
 
-        // If password-protected, decrypt to a plain buffer so all later operations work
-        let workingData = storeBuffer(data); // stored as b64 — never detachable
+        // If password-protected, decrypt to a plain unencrypted stored buffer
+        let workingData = storedData;
         if (password) {
             try {
                 showProgress(((done + 1) / total) * 80, `Decrypting ${file.name}...`);
-                const encrypted = await safeLoad(data, { password, ignoreEncryption: false });
+                const encrypted = await safeLoad(storedData, { password, ignoreEncryption: false });
                 const decrypted = await PDFDocument.create();
-                const pages = await decrypted.copyPages(encrypted, encrypted.getPageIndices());
+                const indices = encrypted.getPageIndices();
+                const pages = await decrypted.copyPages(encrypted, indices);
                 pages.forEach(p => decrypted.addPage(p));
                 const decBytes = await safeSave(decrypted);
-                // Store as Uint8Array for consistent identity — used as WeakMap key
                 workingData = storeBuffer(decBytes);
             } catch(e) {
                 toast(`Could not decrypt ${file.name}: ${e.message}`);
                 done++; continue;
             }
         }
+
+        // Always get page count from the working (decrypted) document via pdf.js
+        const workingPdf = await getPdfDoc(workingData);
 
         // Detect form fields via pdf-lib
         let formFieldsByPage = {};
@@ -491,8 +497,7 @@ async function loadFiles(files) {
             // No form or encrypted — that's fine
         }
 
-        // Get page count from the working (possibly decrypted) document
-        const workingPdf = password ? await getPdfDoc(workingData) : pdf;
+        // Get page count from the working (possibly decrypted) document via pdf.js
         for (let pi = 0; pi < workingPdf.numPages; pi++) {
             state.pages.push({
                 srcFile: workingData, srcName: file.name, srcPageIdx: pi,
