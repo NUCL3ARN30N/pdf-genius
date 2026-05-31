@@ -322,7 +322,8 @@ async function loadFiles(files) {
                 const pages = await decrypted.copyPages(encrypted, encrypted.getPageIndices());
                 pages.forEach(p => decrypted.addPage(p));
                 const decBytes = await decrypted.save();
-                workingData = decBytes.buffer;
+                // Make a clean ArrayBuffer copy — decBytes may be a view into a larger buffer
+                workingData = decBytes.slice(0).buffer;
             } catch(e) {
                 toast(`Could not decrypt ${file.name}: ${e.message}`);
                 done++; continue;
@@ -1181,7 +1182,7 @@ document.getElementById('btn-resize-apply').addEventListener('click', async () =
 
         const bytes = await newDoc.save();
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes.buffer;
+        pg.data = bytes.slice(0).buffer;
         pg.srcPageIdx = 0;
     }
 
@@ -2057,7 +2058,7 @@ document.getElementById('btn-wm-apply').addEventListener('click', async () => {
         });
 
         const bytes = await single.save();
-        const newBuf = bytes.buffer;
+        const newBuf = bytes.slice(0).buffer;
         // Invalidate old cache if page had custom data
         if (pg.data) invalidateCache(pg.data);
         pg.data = newBuf;
@@ -2140,7 +2141,7 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                 try { form.flatten(); } catch(e) {}
 
                 const filledBytes = await filledDoc.save();
-                const filledBuf = filledBytes.buffer;
+                const filledBuf = filledBytes.slice(0).buffer;
 
                 // Now update each page that used this source with its own single-page extract
                 for (const { pg, srcIdx } of info.pages) {
@@ -2150,7 +2151,7 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                     single.addPage(copied);
                     const singleBytes = await single.save();
                     if (pg.data) invalidateCache(pg.data);
-                    pg.data = singleBytes.buffer;
+                    pg.data = singleBytes.slice(0).buffer;
                     pg.srcPageIdx = 0;
                     pg.formFields = []; // Form is now flattened
                     pg.formValues = {};
@@ -2175,7 +2176,7 @@ document.getElementById('btn-download').addEventListener('click', async () => {
             const srcData = pg.data || pg.srcFile;
             const srcIdx = pg.data ? 0 : pg.srcPageIdx;
 
-            const src = await PDFDocument.load(srcData);
+            const src = await PDFDocument.load(new Uint8Array(srcData));
             const [copied] = await out.copyPages(src, [srcIdx]);
 
             if (pg.rotation) {
@@ -2790,7 +2791,7 @@ document.getElementById('btn-insert-blank').addEventListener('click', async () =
     const blankBytes = await blankDoc.save();
 
     const blankPg = {
-        srcFile: blankBytes.buffer, srcName: 'blank.pdf', srcPageIdx: 0,
+        srcFile: blankBytes.slice(0).buffer, srcName: 'blank.pdf', srcPageIdx: 0,
         data: null, rotation: 0, crop: null, annotations: [],
         formFields: [], formValues: {},
     };
@@ -2833,7 +2834,7 @@ async function convertImageToPdfBytes(file) {
     }
     const page = pdfDoc.addPage([ptW, ptH]);
     page.drawImage(embedded, { x: 0, y: 0, width: ptW, height: ptH });
-    return (await pdfDoc.save()).buffer;
+    const _b = await pdfDoc.save(); return _b.slice(0).buffer;
 }
 
 // ===================== STAMP / SIGNATURE =====================
@@ -3012,7 +3013,7 @@ document.getElementById('btn-stamp-apply').addEventListener('click', async () =>
         outPage.drawImage(jpegImg, { x: 0, y: 0, width: baseVp.width, height: baseVp.height });
         const newBytes = await newDoc.save();
         if (pg.data) invalidateCache(pg.data);
-        pg.data = newBytes.buffer; pg.srcPageIdx = 0;
+        pg.data = newBytes.slice(0).buffer; pg.srcPageIdx = 0;
         invalidateCache(pg.data);
     }
 
@@ -3071,7 +3072,7 @@ document.getElementById('btn-pn-apply').addEventListener('click', async () => {
         single.addPage(copied);
         const bytes = await single.save();
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes.buffer; pg.srcPageIdx = 0;
+        pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
     }
 
     hideProgress();
@@ -3132,7 +3133,7 @@ document.getElementById('btn-hf-apply').addEventListener('click', async () => {
         single.addPage(copied);
         const bytes = await single.save();
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes.buffer; pg.srcPageIdx = 0;
+        pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
     }
 
     hideProgress();
@@ -3183,7 +3184,7 @@ document.getElementById('btn-pw-apply').addEventListener('click', async () => {
                 single.addPage(copied);
                 const bytes = await single.save();
                 if (pg.data) invalidateCache(pg.data);
-                pg.data = bytes.buffer; pg.srcPageIdx = 0;
+                pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
             }
             hideProgress();
             toast('Password removed');
@@ -3303,7 +3304,7 @@ document.getElementById('btn-redact-apply').addEventListener('click', async () =
     single.addPage(copied);
     const bytes = await single.save();
     if (pg.data) invalidateCache(pg.data);
-    pg.data = bytes.buffer; pg.srcPageIdx = 0;
+    pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
     invalidateCache(pg.data);
 
     showProgress(100, 'Done!');
