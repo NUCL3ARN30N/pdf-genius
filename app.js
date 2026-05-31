@@ -116,18 +116,61 @@ function downloadBlob(bytes, name) {
 }
 
 function updateStats() {
+    const hasPages = state.pages.length > 0;
+    const has = state.selected.size > 0;
+
     document.getElementById('stat-pages').textContent = state.pages.length;
     document.getElementById('stat-selected').textContent = state.selected.size;
-    const has = state.selected.size > 0;
+
+    // Needs pages to exist
+    document.getElementById('btn-select-all').disabled = !hasPages;
+    document.getElementById('btn-deselect').disabled = !hasPages;
+    document.getElementById('btn-watermark').disabled = !hasPages;
+    document.getElementById('btn-download').disabled = !hasPages;
+    document.getElementById('btn-compress').disabled = !hasPages;
+
+    // Needs a selection
     document.getElementById('btn-rotate').disabled = !has;
+    document.getElementById('btn-remove').disabled = !has;
     document.getElementById('btn-crop').disabled = state.selected.size !== 1;
     document.getElementById('btn-annotate').disabled = state.selected.size !== 1;
-    document.getElementById('btn-remove').disabled = !has;
 
-    // Fill Form — enabled if any pages have form fields (works across all pages)
-    const anyForms = state.pages.some(p => p.formFields.length > 0);
+    // Fill Form — any page has form fields
+    const anyForms = state.pages.some(p => p.formFields && p.formFields.length > 0);
     document.getElementById('btn-fill-form').disabled = !anyForms;
 }
+
+// ===================== RESET PROJECT =====================
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+    openModal('modal-reset');
+});
+document.getElementById('btn-reset-cancel').addEventListener('click', () => closeModalAndGoBack('modal-reset'));
+document.getElementById('btn-reset-confirm').addEventListener('click', () => {
+    closeModal('modal-reset');
+    if (history.state && history.state.modal) history.back();
+    state.pages = [];
+    state.selected.clear();
+    thumbCache.clear();
+    pdfDocCache.clear();
+    document.getElementById('screen-editor').classList.remove('on');
+    document.getElementById('screen-upload').classList.add('on');
+    updateStats();
+    toast('Project reset');
+});
+
+// ===================== CTRL/STRG + A — SELECT ALL =====================
+
+document.addEventListener('keydown', e => {
+    const editorActive = document.getElementById('screen-editor').classList.contains('on');
+    const inputFocused = ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName);
+    if (editorActive && !activeModal && !inputFocused && (e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault();
+        state.pages.forEach((_, i) => state.selected.add(i));
+        document.querySelectorAll('.page-thumb').forEach(t => t.classList.add('selected'));
+        updateStats();
+    }
+});
 
 // ===================== HISTORY / BACK BUTTON =====================
 
@@ -157,6 +200,9 @@ window.addEventListener('popstate', (e) => {
         }
         if (closing === 'modal-form') {
             document.getElementById('form-fields-layer').innerHTML = '';
+        }
+        if (closing === 'modal-reset') {
+            // no special cleanup needed
         }
     }
 });

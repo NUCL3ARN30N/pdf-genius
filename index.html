@@ -72,10 +72,12 @@
             <div class="top-sep"></div>
             <span class="top-stat"><i class="fas fa-file"></i> <span id="stat-pages">0</span> pages</span>
             <span class="top-stat"><i class="fas fa-check-circle"></i> <span id="stat-selected">0</span> selected</span>
+            <div class="top-sep"></div>
+            <button class="tool-btn danger" id="btn-reset"><i class="fas fa-trash-alt"></i> Reset</button>
         </div>
         <div class="top-right">
             <div class="compress-wrap">
-                <button class="tool-btn" id="btn-compress"><i class="fas fa-file-zipper"></i> Compress</button>
+                <button class="tool-btn" id="btn-compress" disabled><i class="fas fa-file-zipper"></i> Compress</button>
                 <div class="compress-popover" id="compress-popover">
                     <div class="compress-popover-title"><i class="fas fa-sliders"></i> Compression Options</div>
 
@@ -125,20 +127,20 @@
                     </button>
                 </div>
             </div>
-            <button class="tool-btn primary" id="btn-download"><i class="fas fa-download"></i> Download PDF</button>
+            <button class="tool-btn primary" id="btn-download" disabled><i class="fas fa-download"></i> Download PDF</button>
         </div>
     </div>
 
     <div class="toolbar">
-        <button class="tool-btn" id="btn-select-all"><i class="fas fa-check-double"></i> Select All</button>
-        <button class="tool-btn" id="btn-deselect"><i class="fas fa-times"></i> Deselect</button>
+        <button class="tool-btn" id="btn-select-all" disabled><i class="fas fa-check-double"></i> Select All</button>
+        <button class="tool-btn" id="btn-deselect" disabled><i class="fas fa-times"></i> Deselect</button>
         <div class="tool-sep"></div>
         <button class="tool-btn" id="btn-rotate" disabled><i class="fas fa-redo"></i> Rotate 90°</button>
         <button class="tool-btn" id="btn-crop" disabled><i class="fas fa-crop-alt"></i> Crop</button>
         <button class="tool-btn" id="btn-annotate" disabled><i class="fas fa-pen-fancy"></i> Annotate</button>
         <button class="tool-btn" id="btn-fill-form" disabled><i class="fas fa-wpforms"></i> Fill Form</button>
         <div class="tool-sep"></div>
-        <button class="tool-btn" id="btn-watermark"><i class="fas fa-stamp"></i> Watermark All</button>
+        <button class="tool-btn" id="btn-watermark" disabled><i class="fas fa-stamp"></i> Watermark All</button>
         <div class="tool-sep"></div>
         <button class="tool-btn danger" id="btn-remove" disabled><i class="fas fa-trash-alt"></i> Remove</button>
     </div>
@@ -325,6 +327,26 @@
             <span>Tap <i class="fas fa-share-from-square"></i> then <strong>"Add to Home Screen"</strong></span>
         </div>
         <button class="ios-install-close" id="ios-install-close"><i class="fas fa-times"></i></button>
+    </div>
+</div>
+
+<!-- ==================== RESET CONFIRM MODAL ==================== -->
+<div class="modal-overlay" id="modal-reset">
+    <div class="modal modal-sm">
+        <div class="ph"><i class="fas fa-triangle-exclamation" style="color:var(--err)"></i> Reset Project</div>
+        <div class="pb">
+            <p style="font-size:14px;color:var(--t2);line-height:1.6;margin-bottom:20px">
+                This will remove all loaded pages and all edits. This cannot be undone.
+            </p>
+            <div class="toolbar" style="margin-bottom:0;padding:0;background:none;border:none">
+                <button class="tool-btn danger" id="btn-reset-confirm" style="flex:1;justify-content:center">
+                    <i class="fas fa-trash-alt"></i> Yes, Reset
+                </button>
+                <button class="tool-btn" id="btn-reset-cancel" style="flex:1;justify-content:center">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+            </div>
+        </div>
     </div>
 </div>
 
