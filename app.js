@@ -75,6 +75,7 @@ function getAbId(stored) {
 }
 
 // PDF.js document cache
+const thumbCache = new Map();
 const pdfDocCache = new Map();
 
 async function getPdfDoc(stored, password) {
