@@ -2032,7 +2032,12 @@ document.getElementById('btn-compress-go').addEventListener('click', async () =>
         downloadBlob(bytes, fname);
         showProgress(100, 'Done!');
 
-        const origBytes = state.pages.reduce((s, p) => s + (p.data || p.srcFile).byteLength, 0);
+        const seenBuffers = new Set();
+        let origBytes = 0;
+        for (const pg of state.pages) {
+            const buf = pg.data || pg.srcFile;
+            if (!seenBuffers.has(buf)) { seenBuffers.add(buf); origBytes += buf.byteLength; }
+        }
         const saving = Math.round((1 - bytes.byteLength / origBytes) * 100);
         const newMB = (bytes.byteLength / 1048576).toFixed(1);
         const origMB = (origBytes / 1048576).toFixed(1);
