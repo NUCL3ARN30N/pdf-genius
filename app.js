@@ -121,6 +121,15 @@ async function safeLoad(buf, opts) {
     return PDFDocument.load(safeCopy(buf), opts);
 }
 
+// Use saveAsBase64 to avoid detached ArrayBuffer issues with pdf-lib's WASM output
+async function safeSave(doc, opts) {
+    const b64 = await doc.saveAsBase64(opts || {});
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+}
+
 function invalidateCache(ab) {
     const id = getAbId(ab);
     // Remove all thumb entries for this buffer
@@ -334,7 +343,7 @@ async function loadFiles(files) {
                 const decrypted = await PDFDocument.create();
                 const pages = await decrypted.copyPages(encrypted, encrypted.getPageIndices());
                 pages.forEach(p => decrypted.addPage(p));
-                const decBytes = await decrypted.save();
+                const decBytes = await safeSave(decrypted);
                 // Store as Uint8Array for consistent identity — used as WeakMap key
                 workingData = decBytes.slice(0);
             } catch(e) {
@@ -1195,9 +1204,9 @@ document.getElementById('btn-resize-apply').addEventListener('click', async () =
             outPage.drawImage(jpegImg, { x: offsetX, y: offsetY, width: drawW, height: drawH });
         }
 
-        const bytes = await newDoc.save();
+        const bytes = await safeSave(newDoc);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes.slice(0).buffer;
+        pg.data = bytes;
         pg.srcPageIdx = 0;
     }
 
@@ -2072,8 +2081,8 @@ document.getElementById('btn-wm-apply').addEventListener('click', async () => {
             color: rgb(cr, cg, cb), opacity, rotate: degrees(rotation),
         });
 
-        const bytes = await single.save();
-        const newBuf = bytes.slice(0).buffer;
+        const bytes = await safeSave(single);
+        const newBuf = bytes;
         // Invalidate old cache if page had custom data
         if (pg.data) invalidateCache(pg.data);
         pg.data = newBuf;
@@ -2155,8 +2164,8 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                 // Flatten form so values are baked in
                 try { form.flatten(); } catch(e) {}
 
-                const filledBytes = await filledDoc.save();
-                const filledBuf = filledBytes.slice(0).buffer;
+                const filledBytes = await safeSave(filledDoc);
+                const filledBuf = filledBytes;
 
                 // Now update each page that used this source with its own single-page extract
                 for (const { pg, srcIdx } of info.pages) {
@@ -2164,9 +2173,9 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                     const single = await PDFDocument.create();
                     const [copied] = await single.copyPages(filledSrc, [srcIdx]);
                     single.addPage(copied);
-                    const singleBytes = await single.save();
+                    const singleBytes = await safeSave(single);
                     if (pg.data) invalidateCache(pg.data);
-                    pg.data = singleBytes.slice(0).buffer;
+                    pg.data = singleBytes;
                     pg.srcPageIdx = 0;
                     pg.formFields = []; // Form is now flattened
                     pg.formValues = {};
@@ -2283,15 +2292,11 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         }
 
         showProgress(97, 'Saving...');
-        const savedBytes = await out.save();
+        const savedBytes = await safeSave(out);
 
         let finalBytes;
         if (state.password) {
-            // Read through Blob to get a fresh, independent ArrayBuffer
-            const blob = new Blob([savedBytes], { type: 'application/pdf' });
-            const arrayBuf = await blob.arrayBuffer();
-            const safePdfBytes = new Uint8Array(arrayBuf);
-            finalBytes = await encryptPdf(safePdfBytes, state.password.user, state.password.owner);
+            finalBytes = await encryptPdf(savedBytes, state.password.user, state.password.owner);
         } else {
             finalBytes = savedBytes;
         }
@@ -2315,9 +2320,8 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 // Uses the PDF xref table to locate streams precisely, then encrypts them.
 
 async function encryptPdf(pdfBytes, userPassword, ownerPassword) {
-    // Use Blob round-trip to get a guaranteed fresh, non-detached ArrayBuffer
-    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-    const data = new Uint8Array(await blob.arrayBuffer());
+    // pdfBytes from safeSave is already a clean Uint8Array — just slice it
+    const data = pdfBytes instanceof Uint8Array ? pdfBytes.slice() : new Uint8Array(pdfBytes);
     const dec = new TextDecoder('latin1');
     const enc = new TextEncoder();
     const toHex = arr => Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('');
@@ -2674,7 +2678,7 @@ document.getElementById('btn-compress-go').addEventListener('click', async () =>
             }
 
             showProgress(90, 'Saving…');
-            bytes = await out.save({ useObjectStreams: true, addDefaultPage: false });
+            bytes = await safeSave(out, { useObjectStreams: true, addDefaultPage: false });
 
         } else {
             // ─── Rasterize path ────────────────────────────────────────────
@@ -2763,7 +2767,7 @@ document.getElementById('btn-compress-go').addEventListener('click', async () =>
             // removeUnused: pdf-lib's save cleans cross-references automatically
 
             showProgress(97, 'Saving…');
-            bytes = await out.save({ useObjectStreams: true, addDefaultPage: false });
+            bytes = await safeSave(out, { useObjectStreams: true, addDefaultPage: false });
         }
 
         downloadBlob(bytes, fname);
@@ -2806,10 +2810,10 @@ document.getElementById('btn-insert-blank').addEventListener('click', async () =
 
     const blankDoc = await PDFDocument.create();
     blankDoc.addPage([width, height]);
-    const blankBytes = await blankDoc.save();
+    const blankBytes = await safeSave(blankDoc);
 
     const blankPg = {
-        srcFile: blankBytes.slice(0).buffer, srcName: 'blank.pdf', srcPageIdx: 0,
+        srcFile: blankBytes, srcName: 'blank.pdf', srcPageIdx: 0,
         data: null, rotation: 0, crop: null, annotations: [],
         formFields: [], formValues: {},
     };
@@ -2852,7 +2856,7 @@ async function convertImageToPdfBytes(file) {
     }
     const page = pdfDoc.addPage([ptW, ptH]);
     page.drawImage(embedded, { x: 0, y: 0, width: ptW, height: ptH });
-    const _b = await pdfDoc.save(); return _b.slice(0).buffer;
+    return await safeSave(pdfDoc);
 }
 
 // ===================== STAMP / SIGNATURE =====================
@@ -3029,9 +3033,9 @@ document.getElementById('btn-stamp-apply').addEventListener('click', async () =>
         const baseVp = page.getViewport({ scale: 1 });
         const outPage = newDoc.addPage([baseVp.width, baseVp.height]);
         outPage.drawImage(jpegImg, { x: 0, y: 0, width: baseVp.width, height: baseVp.height });
-        const newBytes = await newDoc.save();
+        const newBytes = await safeSave(newDoc);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = newBytes.slice(0).buffer; pg.srcPageIdx = 0;
+        pg.data = newBytes; pg.srcPageIdx = 0;
         invalidateCache(pg.data);
     }
 
@@ -3088,9 +3092,9 @@ document.getElementById('btn-pn-apply').addEventListener('click', async () => {
         const single = await PDFDocument.create();
         const [copied] = await single.copyPages(srcDoc, [srcIdx]);
         single.addPage(copied);
-        const bytes = await single.save();
+        const bytes = await safeSave(single);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
+        pg.data = bytes; pg.srcPageIdx = 0;
     }
 
     hideProgress();
@@ -3149,9 +3153,9 @@ document.getElementById('btn-hf-apply').addEventListener('click', async () => {
         const single = await PDFDocument.create();
         const [copied] = await single.copyPages(srcDoc, [srcIdx]);
         single.addPage(copied);
-        const bytes = await single.save();
+        const bytes = await safeSave(single);
         if (pg.data) invalidateCache(pg.data);
-        pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
+        pg.data = bytes; pg.srcPageIdx = 0;
     }
 
     hideProgress();
@@ -3200,9 +3204,9 @@ document.getElementById('btn-pw-apply').addEventListener('click', async () => {
                 const single = await PDFDocument.create();
                 const [copied] = await single.copyPages(decryptedDoc, [srcIdx]);
                 single.addPage(copied);
-                const bytes = await single.save();
+                const bytes = await safeSave(single);
                 if (pg.data) invalidateCache(pg.data);
-                pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
+                pg.data = bytes; pg.srcPageIdx = 0;
             }
             hideProgress();
             toast('Password removed');
@@ -3320,9 +3324,9 @@ document.getElementById('btn-redact-apply').addEventListener('click', async () =
     const single = await PDFDocument.create();
     const [copied] = await single.copyPages(srcDoc, [srcIdx]);
     single.addPage(copied);
-    const bytes = await single.save();
+    const bytes = await safeSave(single);
     if (pg.data) invalidateCache(pg.data);
-    pg.data = bytes.slice(0).buffer; pg.srcPageIdx = 0;
+    pg.data = bytes; pg.srcPageIdx = 0;
     invalidateCache(pg.data);
 
     showProgress(100, 'Done!');
@@ -3370,11 +3374,9 @@ async function buildSharePdf() {
     }
     progressText.textContent = 'Saving…';
     progressFill.style.width = '95%';
-    let bytes = await out.save();
+    let bytes = await safeSave(out);
     if (state.password) {
-        const blob = new Blob([bytes], { type: 'application/pdf' });
-        const arrayBuf = await blob.arrayBuffer();
-        bytes = await encryptPdf(new Uint8Array(arrayBuf), state.password.user, state.password.owner);
+        bytes = await encryptPdf(bytes, state.password.user, state.password.owner);
     }
     progressFill.style.width = '100%';
     document.getElementById('share-building').style.display = 'none';
