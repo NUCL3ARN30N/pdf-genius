@@ -142,6 +142,7 @@
         <button class="tool-btn" id="btn-redact" disabled><i class="fas fa-eraser"></i> Redact</button>
         <div class="tool-sep"></div>
         <button class="tool-btn" id="btn-insert-blank" disabled><i class="fas fa-file-circle-plus"></i> Insert Blank</button>
+        <button class="tool-btn" id="btn-resize-page" disabled><i class="fas fa-expand-arrows-alt"></i> Resize to A4</button>
         <div class="tool-sep"></div>
         <button class="tool-btn" id="btn-stamp" disabled><i class="fas fa-signature"></i> Stamp</button>
         <button class="tool-btn" id="btn-page-numbers" disabled><i class="fas fa-list-ol"></i> Page Numbers</button>
@@ -206,6 +207,7 @@
                     <button class="anno-btn" data-tool="draw"><i class="fas fa-pencil-alt"></i> <span class="anno-label">Draw</span></button>
                     <button class="anno-btn" data-tool="highlight"><i class="fas fa-highlighter"></i> <span class="anno-label">Highlight</span></button>
                     <button class="anno-btn" data-tool="text"><i class="fas fa-font"></i> <span class="anno-label">Text</span></button>
+                    <button class="anno-btn" data-tool="stamp"><i class="fas fa-stamp"></i> <span class="anno-label">Stamp</span></button>
                     <button class="anno-btn" data-tool="eraser"><i class="fas fa-eraser"></i> <span class="anno-label">Eraser</span></button>
                     <button class="anno-btn on" data-tool="pan"><i class="fas fa-hand-paper"></i> <span class="anno-label">Pan</span></button>
                     <div class="anno-sep"></div>
@@ -216,7 +218,41 @@
                     <button class="anno-btn" id="btn-anno-undo"><i class="fas fa-undo"></i></button>
                     <button class="anno-btn" id="btn-anno-clear"><i class="fas fa-trash-alt"></i></button>
                 </div>
-                <div class="anno-opts-row">
+                <!-- Stamp options row — shown only when stamp tool is active -->
+                <div class="anno-opts-row" id="stamp-opts-row" style="display:none;flex-wrap:wrap;gap:8px;padding:8px 16px;border-top:1px solid var(--brd)">
+                    <div class="stamp-type-btns">
+                        <button class="anno-btn on" data-stype="draw-sig">✍️ Draw</button>
+                        <button class="anno-btn" data-stype="text-stamp">🔤 Text</button>
+                        <button class="anno-btn" data-stype="upload-img">🖼 Image</button>
+                    </div>
+                    <!-- Draw signature mini-pad -->
+                    <div class="stamp-input-panel on" id="sip-draw-sig">
+                        <canvas id="stamp-mini-canvas" width="260" height="80" style="background:#fff;border:1px solid var(--brd);border-radius:6px;cursor:crosshair;display:block"></canvas>
+                        <button class="anno-btn" id="btn-stamp-mini-clear" style="margin-top:4px;width:100%;justify-content:center"><i class="fas fa-undo"></i> Clear</button>
+                    </div>
+                    <!-- Text stamp -->
+                    <div class="stamp-input-panel" id="sip-text-stamp">
+                        <input type="text" id="stamp-text-input" value="APPROVED" style="width:140px;padding:7px 10px;font-size:13px">
+                        <select id="stamp-text-style-sel" style="padding:7px 8px;font-size:12px">
+                            <option value="plain">Plain</option>
+                            <option value="box">Box</option>
+                            <option value="circle">Circle</option>
+                        </select>
+                        <div class="cpw" style="padding:4px 8px"><input type="color" id="stamp-text-color-sel" value="#cc0000" style="width:24px;height:24px"></div>
+                    </div>
+                    <!-- Upload image -->
+                    <div class="stamp-input-panel" id="sip-upload-img">
+                        <button class="anno-btn" id="btn-stamp-img-pick"><i class="fas fa-image"></i> Choose Image</button>
+                        <input type="file" id="stamp-img-file" accept="image/*" hidden>
+                        <span id="stamp-img-name" style="font-size:11px;color:var(--t3);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+                    </div>
+                    <div class="anno-sep"></div>
+                    <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--t2)">
+                        Size: <input type="range" id="stamp-size-range" min="5" max="60" value="25" style="width:80px">
+                        <span id="stamp-size-pct">25%</span>
+                    </div>
+                </div>
+                <div class="anno-opts-row" id="draw-opts-row">
                     <div class="cpw" style="padding:4px 8px">
                         <input type="color" id="anno-color" value="#e17055" style="width:26px;height:26px">
                     </div>
@@ -597,6 +633,50 @@
                 <button class="tool-btn" id="btn-share-cancel" style="flex:1;justify-content:center">
                     <i class="fas fa-times"></i> Close
                 </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== RESIZE PAGE MODAL ==================== -->
+<div class="modal-overlay" id="modal-resize">
+    <div class="modal modal-sm">
+        <div class="ph"><i class="fas fa-expand-arrows-alt"></i> Resize to A4
+            <button class="modal-close" id="resize-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div class="fg">
+                <label>Method</label>
+                <div class="resize-mode-btns">
+                    <button class="resize-mode on" data-mode="pad">
+                        <i class="fas fa-border-all"></i>
+                        <strong>Pad</strong>
+                        <span>Keep content size, fill empty space with white</span>
+                    </button>
+                    <button class="resize-mode" data-mode="stretch">
+                        <i class="fas fa-arrows-alt"></i>
+                        <strong>Stretch</strong>
+                        <span>Scale content to fill A4 exactly</span>
+                    </button>
+                </div>
+            </div>
+            <div class="fg">
+                <label>Orientation</label>
+                <select id="resize-orientation">
+                    <option value="portrait">Portrait (A4 · 210 × 297 mm)</option>
+                    <option value="landscape">Landscape (A4 · 297 × 210 mm)</option>
+                </select>
+            </div>
+            <div class="fg">
+                <label>Apply to</label>
+                <select id="resize-apply-to">
+                    <option value="selected">Selected pages</option>
+                    <option value="all">All pages</option>
+                </select>
+            </div>
+            <div class="toolbar" style="margin-top:16px">
+                <button class="tool-btn primary" id="btn-resize-apply"><i class="fas fa-check"></i> Apply</button>
+                <button class="tool-btn" id="btn-resize-cancel"><i class="fas fa-times"></i> Cancel</button>
             </div>
         </div>
     </div>

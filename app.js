@@ -137,7 +137,7 @@ function updateStats() {
     document.getElementById('btn-annotate').disabled = state.selected.size !== 1;
 
     // New buttons that need pages
-    ['btn-insert-blank','btn-stamp','btn-page-numbers','btn-header-footer','btn-password','btn-share','btn-redact'].forEach(id => {
+    ['btn-insert-blank','btn-stamp','btn-page-numbers','btn-header-footer','btn-password','btn-share','btn-redact','btn-resize-page'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = !hasPages;
     });
@@ -819,6 +819,293 @@ document.getElementById('btn-anno-zoom-out').addEventListener('click', () => {
     reRenderAnnotateAtScale();
 });
 
+// ===================== STAMP MINI-PAD (in annotate) =====================
+
+const stampMiniState = { type: 'draw-sig', imgDataUrl: null };
+
+// Type switching
+document.querySelectorAll('[data-stype]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-stype]').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+        stampMiniState.type = btn.dataset.stype;
+        document.querySelectorAll('.stamp-input-panel').forEach(p => p.classList.remove('on'));
+        document.getElementById('sip-' + btn.dataset.stype).classList.add('on');
+    });
+});
+
+// Mini draw pad
+const miniCanvas = document.getElementById('stamp-mini-canvas');
+const miniCtx = miniCanvas.getContext('2d');
+miniCtx.strokeStyle = '#1a1820'; miniCtx.lineWidth = 2.5; miniCtx.lineCap = 'round';
+let miniDrawing = false;
+function miniPos(e) {
+    const r = miniCanvas.getBoundingClientRect();
+    const cx = (e.clientX ?? e.touches[0].clientX) - r.left;
+    const cy = (e.clientY ?? e.touches[0].clientY) - r.top;
+    return { x: cx * miniCanvas.width / r.width, y: cy * miniCanvas.height / r.height };
+}
+miniCanvas.addEventListener('mousedown', e => { miniDrawing = true; const p = miniPos(e); miniCtx.beginPath(); miniCtx.moveTo(p.x, p.y); e.preventDefault(); });
+miniCanvas.addEventListener('mousemove', e => { if (!miniDrawing) return; const p = miniPos(e); miniCtx.lineTo(p.x, p.y); miniCtx.stroke(); });
+miniCanvas.addEventListener('mouseup', () => miniDrawing = false);
+miniCanvas.addEventListener('mouseleave', () => miniDrawing = false);
+miniCanvas.addEventListener('touchstart', e => { e.preventDefault(); miniDrawing = true; const p = miniPos(e); miniCtx.beginPath(); miniCtx.moveTo(p.x, p.y); }, { passive:false });
+miniCanvas.addEventListener('touchmove', e => { e.preventDefault(); if (!miniDrawing) return; const p = miniPos(e); miniCtx.lineTo(p.x, p.y); miniCtx.stroke(); }, { passive:false });
+miniCanvas.addEventListener('touchend', () => miniDrawing = false);
+document.getElementById('btn-stamp-mini-clear').addEventListener('click', () => miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height));
+
+// Image pick
+document.getElementById('btn-stamp-img-pick').addEventListener('click', () => document.getElementById('stamp-img-file').click());
+document.getElementById('stamp-img-file').addEventListener('change', e => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+        stampMiniState.imgDataUrl = ev.target.result;
+        document.getElementById('stamp-img-name').textContent = file.name;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+});
+
+// Size slider
+document.getElementById('stamp-size-range').addEventListener('input', e => {
+    document.getElementById('stamp-size-pct').textContent = e.target.value + '%';
+});
+
+// Build stamp image data URL from current settings
+function buildStampDataUrl() {
+    const type = stampMiniState.type;
+    if (type === 'draw-sig') {
+        return miniCanvas.toDataURL('image/png');
+    }
+    if (type === 'upload-img') {
+        return stampMiniState.imgDataUrl;
+    }
+    if (type === 'text-stamp') {
+        const text = document.getElementById('stamp-text-input').value || 'STAMP';
+        const color = document.getElementById('stamp-text-color-sel').value;
+        const style = document.getElementById('stamp-text-style-sel').value;
+        const tc = document.createElement('canvas'); tc.width = 400; tc.height = 140;
+        const tctx = tc.getContext('2d');
+        tctx.clearRect(0, 0, 400, 140);
+        tctx.font = 'bold 64px Arial, sans-serif';
+        tctx.fillStyle = color; tctx.textAlign = 'center'; tctx.textBaseline = 'middle';
+        if (style === 'box') { tctx.strokeStyle = color; tctx.lineWidth = 8; tctx.strokeRect(10, 10, 380, 120); }
+        if (style === 'circle') { tctx.strokeStyle = color; tctx.lineWidth = 8; tctx.beginPath(); tctx.arc(200, 70, 64, 0, Math.PI * 2); tctx.stroke(); }
+        tctx.fillText(text, 200, 70);
+        return tc.toDataURL('image/png');
+    }
+    return null;
+}
+
+// Place stamp on canvas click
+async function placeStamp(pos) {
+    const dataUrl = buildStampDataUrl();
+    if (!dataUrl) { toast('Nothing to stamp — draw a signature or select an image'); return; }
+
+    const img = new Image(); img.src = dataUrl;
+    await new Promise(res => { img.onload = res; });
+
+    const sizePct = parseInt(document.getElementById('stamp-size-range').value) / 100;
+    // Width in PDF points = sizePct * page width
+    const pg = state.pages[annoState.idx];
+    const srcData = pg.data || pg.srcFile;
+    const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+    const pdfDoc = await getPdfDoc(srcData);
+    const page = await pdfDoc.getPage(srcIdx + 1);
+    const baseVp = page.getViewport({ scale: 1 });
+    const wPt = baseVp.width * sizePct;
+    const hPt = wPt * img.naturalHeight / img.naturalWidth;
+
+    pushUndo();
+    const a = {
+        type: 'stamp',
+        x: pos.x - wPt / 2,   // PDF points, top-left
+        y: pos.y - hPt / 2,
+        w: wPt, h: hPt,
+        dataUrl,
+        confirmed: false,
+    };
+    pg.annotations.push(a);
+    rebuildOverlayLayer();
+}
+
+// Stamp overlay nodes
+function createStampNode(a, annoIdx, s) {
+    const layer = document.getElementById('anno-text-layer');
+    const wrap = document.createElement('div');
+    wrap.className = 'anno-stamp-node' + (a.confirmed ? ' anno-stamp-confirmed' : '');
+    wrap.style.left = (a.x * s) + 'px';
+    wrap.style.top = (a.y * s) + 'px';
+    wrap.style.width = (a.w * s) + 'px';
+    wrap.style.position = 'absolute';
+    wrap.style.zIndex = '6';
+
+    const img = document.createElement('img');
+    img.src = a.dataUrl;
+    img.style.width = '100%';
+    img.style.display = 'block';
+    img.draggable = false;
+
+    // Action buttons
+    const actions = document.createElement('div');
+    actions.className = 'anno-stamp-actions';
+    actions.style.display = a.confirmed ? 'none' : 'flex';
+
+    const btnConfirm = document.createElement('button');
+    btnConfirm.className = 'anno-text-act act-confirm';
+    btnConfirm.innerHTML = '<i class="fas fa-check"></i>';
+    btnConfirm.title = 'Confirm';
+
+    const btnDrag = document.createElement('button');
+    btnDrag.className = 'anno-text-act act-drag';
+    btnDrag.innerHTML = '<i class="fas fa-arrows-alt"></i>';
+    btnDrag.title = 'Drag';
+
+    const btnRemove = document.createElement('button');
+    btnRemove.className = 'anno-text-act act-remove';
+    btnRemove.innerHTML = '<i class="fas fa-times"></i>';
+    btnRemove.title = 'Remove';
+
+    actions.appendChild(btnConfirm);
+    actions.appendChild(btnDrag);
+    actions.appendChild(btnRemove);
+    wrap.appendChild(actions);
+    wrap.appendChild(img);
+    layer.appendChild(wrap);
+
+    function confirmStamp() {
+        a.confirmed = true;
+        wrap.classList.add('anno-stamp-confirmed');
+        actions.style.display = 'none';
+    }
+    function removeStamp() {
+        pushUndo();
+        const pg = state.pages[annoState.idx];
+        pg.annotations.splice(pg.annotations.indexOf(a), 1);
+        rebuildOverlayLayer();
+    }
+    function startDrag(e) {
+        e.preventDefault(); e.stopPropagation();
+        pushUndo();
+        const startX = e.clientX, startY = e.clientY;
+        const origL = parseFloat(wrap.style.left), origT = parseFloat(wrap.style.top);
+        const onMove = e2 => {
+            wrap.style.left = (origL + e2.clientX - startX) + 'px';
+            wrap.style.top = (origT + e2.clientY - startY) + 'px';
+        };
+        const onUp = () => {
+            const sc = annoState.scale;
+            a.x = parseFloat(wrap.style.left) / sc;
+            a.y = parseFloat(wrap.style.top) / sc;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    }
+
+    btnConfirm.addEventListener('click', e => { e.stopPropagation(); confirmStamp(); });
+    btnRemove.addEventListener('click', e => { e.stopPropagation(); removeStamp(); });
+    btnDrag.addEventListener('mousedown', startDrag);
+    img.addEventListener('mousedown', e => { if (a.confirmed) return; startDrag(e); });
+    wrap.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        a.confirmed = false;
+        wrap.classList.remove('anno-stamp-confirmed');
+        actions.style.display = 'flex';
+    });
+
+    return wrap;
+}
+
+// ===================== RESIZE TO A4 =====================
+
+document.getElementById('btn-resize-page').addEventListener('click', () => {
+    if (!state.pages.length) return;
+    openModal('modal-resize');
+});
+document.getElementById('resize-close').addEventListener('click', () => closeModalAndGoBack('modal-resize'));
+document.getElementById('btn-resize-cancel').addEventListener('click', () => closeModalAndGoBack('modal-resize'));
+
+document.querySelectorAll('.resize-mode').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.resize-mode').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+    });
+});
+
+document.getElementById('btn-resize-apply').addEventListener('click', async () => {
+    const mode = document.querySelector('.resize-mode.on').dataset.mode;
+    const orientation = document.getElementById('resize-orientation').value;
+    const applyTo = document.getElementById('resize-apply-to').value;
+
+    // A4 in PDF points (1pt = 1/72 inch; A4 = 210×297mm)
+    const A4_W = orientation === 'portrait' ? 595.28 : 841.89;
+    const A4_H = orientation === 'portrait' ? 841.89 : 595.28;
+
+    closeModalAndGoBack('modal-resize');
+    showProgress(0, 'Resizing pages…');
+
+    const targetPages = state.pages.filter((_, i) =>
+        applyTo === 'all' || state.selected.has(i)
+    );
+
+    for (let pi = 0; pi < targetPages.length; pi++) {
+        showProgress(((pi + 1) / targetPages.length) * 95, `Resizing page ${pi + 1}/${targetPages.length}…`);
+        const pg = targetPages[pi];
+        const srcData = pg.data || pg.srcFile;
+        const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+
+        const srcDoc = await PDFDocument.load(srcData);
+        const srcPage = srcDoc.getPages()[srcIdx];
+        const { width: sw, height: sh } = srcPage.getSize();
+
+        const newDoc = await PDFDocument.create();
+
+        if (mode === 'stretch') {
+            // Copy page and set new media box
+            const [copied] = await newDoc.copyPages(srcDoc, [srcIdx]);
+            newDoc.addPage(copied);
+            const outPage = newDoc.getPages()[0];
+            outPage.setMediaBox(0, 0, A4_W, A4_H);
+            outPage.setCropBox(0, 0, A4_W, A4_H);
+        } else {
+            // Pad mode: render at 2× and place centred on A4 canvas
+            const pdfJsDoc = await pdfjsLib.getDocument({ data: srcData.slice(0) }).promise;
+            const renderPg = await pdfJsDoc.getPage(srcIdx + 1);
+            const scale2 = 2;
+            const renderVp = renderPg.getViewport({ scale: scale2 });
+            const canvas = document.createElement('canvas');
+            canvas.width = renderVp.width; canvas.height = renderVp.height;
+            await renderPg.render({ canvasContext: canvas.getContext('2d'), viewport: renderVp }).promise;
+
+            const jpegB64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+            const jpegBytes = Uint8Array.from(atob(jpegB64), c => c.charCodeAt(0));
+            const jpegImg = await newDoc.embedJpg(jpegBytes);
+
+            // Scale content to fit A4 maintaining aspect, centred
+            const scaleX = A4_W / sw, scaleY = A4_H / sh;
+            const fitScale = Math.min(scaleX, scaleY, 1); // don't upscale beyond original
+            const drawW = sw * fitScale, drawH = sh * fitScale;
+            const offsetX = (A4_W - drawW) / 2, offsetY = (A4_H - drawH) / 2;
+
+            const outPage = newDoc.addPage([A4_W, A4_H]);
+            // White background already (pdf default)
+            outPage.drawImage(jpegImg, { x: offsetX, y: offsetY, width: drawW, height: drawH });
+        }
+
+        const bytes = await newDoc.save();
+        if (pg.data) invalidateCache(pg.data);
+        pg.data = bytes.buffer;
+        pg.srcPageIdx = 0;
+    }
+
+    hideProgress();
+    await renderGrid();
+    toast(`${targetPages.length} page(s) resized to A4`);
+});
+
 // Font mapping: CSS font → pdf-lib StandardFont
 const FONT_MAP = {
     'DM Sans': StandardFonts.Helvetica,
@@ -867,6 +1154,7 @@ function rebuildOverlayLayer() {
     pg.annotations.forEach((a, i) => {
         if (a.type === 'text') createTextNode(a, i, s, s);
         else if (a.type === 'highlight') createHighlightNode(a, i, s, s);
+        else if (a.type === 'stamp') createStampNode(a, i, s);
     });
 }
 // Keep old name as alias
@@ -1197,13 +1485,16 @@ document.querySelectorAll('.anno-btn[data-tool]').forEach(btn => {
         btn.classList.add('on');
         annoState.tool = btn.dataset.tool;
         const canvas = document.getElementById('anno-canvas');
-        const cursors = { draw:'crosshair', highlight:'crosshair', text:'text', eraser:'cell', pan:'grab' };
+        const cursors = { draw:'crosshair', highlight:'crosshair', text:'text', eraser:'cell', pan:'grab', stamp:'copy' };
         canvas.style.cursor = cursors[annoState.tool] || 'crosshair';
-        // Pan mode: allow touch scrolling on canvas wrap
         const wrap = document.getElementById('anno-canvas-wrap');
         wrap.style.touchAction = annoState.tool === 'pan' ? 'auto' : 'none';
         if (annoState.tool === 'pan') wrap.classList.add('pan-mode');
         else wrap.classList.remove('pan-mode');
+        // Show stamp opts or draw opts
+        const isStamp = annoState.tool === 'stamp';
+        document.getElementById('stamp-opts-row').style.display = isStamp ? 'flex' : 'none';
+        document.getElementById('draw-opts-row').style.display = isStamp ? 'none' : 'flex';
     });
 });
 
@@ -1281,6 +1572,12 @@ function annoDown(e) {
 
     e.preventDefault();
     const pg = state.pages[annoState.idx];
+
+    if (annoState.tool === 'stamp') {
+        const pos = getAnnoPos(e);
+        placeStamp(pos);
+        return;
+    }
 
     if (annoState.tool === 'text') {
         if (hasUnconfirmedText()) {
@@ -1420,9 +1717,9 @@ document.getElementById('anno-close').addEventListener('click', () => closeModal
 document.getElementById('btn-anno-cancel').addEventListener('click', () => closeModalAndGoBack('modal-annotate'));
 
 document.getElementById('btn-anno-apply').addEventListener('click', () => {
-    // Auto-confirm any unconfirmed text
+    // Auto-confirm any unconfirmed text or stamps
     const pg = state.pages[annoState.idx];
-    pg.annotations.forEach(a => { if (a.type === 'text' && !a.confirmed) a.confirmed = true; });
+    pg.annotations.forEach(a => { if ((a.type === 'text' || a.type === 'stamp') && !a.confirmed) a.confirmed = true; });
 
     closeModalAndGoBack('modal-annotate');
     annoState.pdfDoc = null;
@@ -1867,6 +2164,18 @@ document.getElementById('btn-download').addEventListener('click', async () => {
                             width: rw, height: rh,
                             color, opacity: 0.3,
                         });
+                    } else if (a.type === 'stamp' && a.dataUrl) {
+                        try {
+                            const b64 = a.dataUrl.split(',')[1];
+                            const imgBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+                            const embedded = await out.embedPng(imgBytes).catch(() => out.embedJpg(imgBytes));
+                            outPage.drawImage(embedded, {
+                                x: a.x * sx,
+                                y: oh - (a.y + a.h) * sy,
+                                width: a.w * sx,
+                                height: a.h * sy,
+                            });
+                        } catch(e) { /* skip unembeddable stamp */ }
                     }
                 }
             }

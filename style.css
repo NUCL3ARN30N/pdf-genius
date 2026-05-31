@@ -486,7 +486,38 @@ input[type="range"]::-webkit-slider-thumb {
     color:var(--acl); min-width:34px; text-align:right;
 }
 
-/* ===================== STAMP ===================== */
+/* ===================== STAMP INLINE TOOL ===================== */
+.stamp-type-btns { display:flex; gap:4px; }
+.stamp-input-panel { display:none; align-items:center; gap:8px; flex-wrap:wrap; }
+.stamp-input-panel.on { display:flex; }
+
+/* Stamp overlay node on the anno canvas */
+.anno-stamp-node {
+    position:absolute; pointer-events:auto; cursor:grab;
+    z-index:6; transform-origin:top left;
+}
+.anno-stamp-node img { display:block; max-width:100%; }
+.anno-stamp-node:hover .anno-stamp-actions { display:flex; }
+.anno-stamp-actions {
+    display:none; position:absolute; top:-30px; left:50%; transform:translateX(-50%);
+    gap:4px; z-index:10;
+}
+.anno-stamp-confirmed .anno-stamp-actions { display:none !important; }
+
+/* ===================== RESIZE A4 MODAL ===================== */
+.resize-mode-btns { display:flex; gap:8px; margin-top:4px; }
+.resize-mode {
+    flex:1; padding:12px 10px; border:1px solid var(--brd); border-radius:var(--r2);
+    background:var(--inp); cursor:pointer; text-align:left;
+    transition:all var(--tr); display:flex; flex-direction:column; gap:4px;
+    font-family:inherit;
+}
+.resize-mode i { color:var(--acl); font-size:16px; margin-bottom:2px; }
+.resize-mode strong { font-size:13px; color:var(--t1); font-weight:600; display:block; }
+.resize-mode span { font-size:11px; color:var(--t3); line-height:1.4; display:block; }
+.resize-mode.on { border-color:var(--ac); background:var(--acg); }
+.resize-mode.on i { color:var(--ac); }
+.resize-mode:hover:not(.on) { border-color:var(--t3); background:var(--hov); }
 .stamp-tabs, .pw-tabs { display:flex; gap:4px; margin-bottom:16px; background:var(--bg2); padding:4px; border-radius:var(--r1); }
 .stamp-tab, .pw-tab { flex:1; padding:8px; border:none; background:none; color:var(--t3); font-family:inherit; font-size:13px; font-weight:500; border-radius:7px; cursor:pointer; transition:all var(--tr); }
 .stamp-tab.on, .pw-tab.on { background:var(--card); color:var(--t1); box-shadow:0 1px 4px rgba(0,0,0,.3); }
