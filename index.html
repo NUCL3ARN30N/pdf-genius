@@ -131,7 +131,7 @@
         </div>
     </div>
 
-    <div class="toolbar">
+    <div class="toolbar" id="main-toolbar">
         <button class="tool-btn" id="btn-select-all" disabled><i class="fas fa-check-double"></i> Select All</button>
         <button class="tool-btn" id="btn-deselect" disabled><i class="fas fa-times"></i> Deselect</button>
         <div class="tool-sep"></div>
@@ -139,8 +139,19 @@
         <button class="tool-btn" id="btn-crop" disabled><i class="fas fa-crop-alt"></i> Crop</button>
         <button class="tool-btn" id="btn-annotate" disabled><i class="fas fa-pen-fancy"></i> Annotate</button>
         <button class="tool-btn" id="btn-fill-form" disabled><i class="fas fa-wpforms"></i> Fill Form</button>
+        <button class="tool-btn" id="btn-redact" disabled><i class="fas fa-eraser"></i> Redact</button>
         <div class="tool-sep"></div>
-        <button class="tool-btn" id="btn-watermark" disabled><i class="fas fa-stamp"></i> Watermark All</button>
+        <button class="tool-btn" id="btn-insert-blank" disabled><i class="fas fa-file-circle-plus"></i> Insert Blank</button>
+        <button class="tool-btn" id="btn-img-to-pdf"><i class="fas fa-image"></i> Image to PDF</button>
+        <input type="file" id="img-to-pdf-input" accept="image/*" multiple hidden>
+        <div class="tool-sep"></div>
+        <button class="tool-btn" id="btn-stamp" disabled><i class="fas fa-signature"></i> Stamp</button>
+        <button class="tool-btn" id="btn-page-numbers" disabled><i class="fas fa-list-ol"></i> Page Numbers</button>
+        <button class="tool-btn" id="btn-header-footer" disabled><i class="fas fa-heading"></i> Header/Footer</button>
+        <div class="tool-sep"></div>
+        <button class="tool-btn" id="btn-watermark" disabled><i class="fas fa-stamp"></i> Watermark</button>
+        <button class="tool-btn" id="btn-password" disabled><i class="fas fa-lock"></i> Password</button>
+        <button class="tool-btn" id="btn-share" disabled><i class="fas fa-share-nodes"></i> Share</button>
         <div class="tool-sep"></div>
         <button class="tool-btn danger" id="btn-remove" disabled><i class="fas fa-trash-alt"></i> Remove</button>
     </div>
@@ -327,6 +338,269 @@
             <span>Tap <i class="fas fa-share-from-square"></i> then <strong>"Add to Home Screen"</strong></span>
         </div>
         <button class="ios-install-close" id="ios-install-close"><i class="fas fa-times"></i></button>
+    </div>
+</div>
+
+<!-- ==================== STAMP / SIGNATURE MODAL ==================== -->
+<div class="modal-overlay" id="modal-stamp">
+    <div class="modal modal-lg">
+        <div class="ph"><i class="fas fa-signature"></i> Stamp / Signature
+            <button class="modal-close" id="stamp-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div class="stamp-tabs">
+                <button class="stamp-tab on" data-tab="draw">Draw</button>
+                <button class="stamp-tab" data-tab="text">Text Stamp</button>
+                <button class="stamp-tab" data-tab="upload">Upload Image</button>
+            </div>
+            <div class="stamp-panel on" id="stamp-draw-panel">
+                <canvas id="stamp-canvas" width="500" height="200"></canvas>
+                <div class="stamp-draw-toolbar">
+                    <div class="cpw" style="padding:4px 8px"><input type="color" id="stamp-color" value="#1a1820" style="width:24px;height:24px"></div>
+                    <select id="stamp-size" style="width:70px;font-size:12px;padding:5px 8px">
+                        <option value="2">Thin</option><option value="4" selected>Medium</option><option value="8">Thick</option>
+                    </select>
+                    <button class="tool-btn" id="btn-stamp-clear-draw"><i class="fas fa-undo"></i> Clear</button>
+                </div>
+            </div>
+            <div class="stamp-panel" id="stamp-text-panel">
+                <div class="fg"><label>Stamp Text</label>
+                    <input type="text" id="stamp-text-val" value="APPROVED" placeholder="APPROVED">
+                </div>
+                <div class="cr">
+                    <div class="fg"><label>Color</label>
+                        <div class="cpw"><input type="color" id="stamp-text-color" value="#e17055"><span id="stamp-text-color-hex">#e17055</span></div>
+                    </div>
+                    <div class="fg"><label>Style</label>
+                        <select id="stamp-text-style">
+                            <option value="box">Box</option>
+                            <option value="circle">Circle</option>
+                            <option value="plain">Plain</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="stamp-panel" id="stamp-upload-panel">
+                <div class="upload-zone" id="stamp-upload-zone" style="padding:32px">
+                    <i class="fas fa-image"></i>
+                    <div>Drop image here or click to browse</div>
+                    <div class="hint">PNG with transparency recommended</div>
+                </div>
+                <input type="file" id="stamp-file-input" accept="image/*" hidden>
+                <img id="stamp-preview" style="display:none;max-height:120px;border-radius:8px;margin-top:12px">
+            </div>
+            <div class="fg" style="margin-top:16px">
+                <label>Position on page</label>
+                <div class="stamp-position-grid" id="stamp-position-grid">
+                    <button class="stamp-pos" data-pos="tl"></button><button class="stamp-pos" data-pos="tc"></button><button class="stamp-pos" data-pos="tr"></button>
+                    <button class="stamp-pos" data-pos="ml"></button><button class="stamp-pos on" data-pos="mc"></button><button class="stamp-pos" data-pos="mr"></button>
+                    <button class="stamp-pos" data-pos="bl"></button><button class="stamp-pos" data-pos="bc"></button><button class="stamp-pos on" data-pos="br"></button>
+                </div>
+            </div>
+            <div class="fg">
+                <label>Size <span id="stamp-scale-val">40</span>%</label>
+                <input type="range" id="stamp-scale" min="10" max="100" value="40">
+            </div>
+            <div class="fg">
+                <label>Opacity <span id="stamp-opacity-val">90</span>%</label>
+                <input type="range" id="stamp-opacity" min="10" max="100" value="90">
+            </div>
+            <div class="fg">
+                <label>Apply to</label>
+                <select id="stamp-apply-to">
+                    <option value="selected">Selected pages</option>
+                    <option value="all">All pages</option>
+                    <option value="odd">Odd pages</option>
+                    <option value="even">Even pages</option>
+                </select>
+            </div>
+            <div class="toolbar" style="margin-top:16px">
+                <button class="tool-btn primary" id="btn-stamp-apply"><i class="fas fa-check"></i> Apply Stamp</button>
+                <button class="tool-btn" id="btn-stamp-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== PAGE NUMBERS MODAL ==================== -->
+<div class="modal-overlay" id="modal-page-numbers">
+    <div class="modal">
+        <div class="ph"><i class="fas fa-list-ol"></i> Page Numbers
+            <button class="modal-close" id="pn-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div class="cr">
+                <div class="fg"><label>Position</label>
+                    <select id="pn-position">
+                        <option value="bottom-center" selected>Bottom Center</option>
+                        <option value="bottom-left">Bottom Left</option>
+                        <option value="bottom-right">Bottom Right</option>
+                        <option value="top-center">Top Center</option>
+                        <option value="top-left">Top Left</option>
+                        <option value="top-right">Top Right</option>
+                    </select>
+                </div>
+                <div class="fg"><label>Start at</label>
+                    <input type="number" id="pn-start" value="1" min="0" style="font-size:14px">
+                </div>
+            </div>
+            <div class="cr">
+                <div class="fg"><label>Font Size</label>
+                    <input type="number" id="pn-size" value="12" min="6" max="36" style="font-size:14px">
+                </div>
+                <div class="fg"><label>Color</label>
+                    <div class="cpw"><input type="color" id="pn-color" value="#333333"><span id="pn-color-hex">#333333</span></div>
+                </div>
+            </div>
+            <div class="fg"><label>Format</label>
+                <select id="pn-format">
+                    <option value="{n}">1, 2, 3 …</option>
+                    <option value="Page {n}">Page 1, Page 2 …</option>
+                    <option value="{n} / {total}">1 / 12, 2 / 12 …</option>
+                    <option value="Page {n} of {total}">Page 1 of 12 …</option>
+                </select>
+            </div>
+            <div class="fg"><label>Skip first <span id="pn-skip-val">0</span> page(s)</label>
+                <input type="range" id="pn-skip" min="0" max="10" value="0">
+            </div>
+            <div class="toolbar" style="margin-top:16px">
+                <button class="tool-btn primary" id="btn-pn-apply"><i class="fas fa-check"></i> Apply</button>
+                <button class="tool-btn" id="btn-pn-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== HEADER / FOOTER MODAL ==================== -->
+<div class="modal-overlay" id="modal-hf">
+    <div class="modal">
+        <div class="ph"><i class="fas fa-heading"></i> Header &amp; Footer
+            <button class="modal-close" id="hf-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div class="hf-section">
+                <div class="hf-section-title"><i class="fas fa-arrow-up"></i> Header</div>
+                <div class="cr3">
+                    <div class="fg"><label>Left</label><input type="text" id="hf-hl" placeholder="e.g. Company"></div>
+                    <div class="fg"><label>Center</label><input type="text" id="hf-hc" placeholder="e.g. {date}"></div>
+                    <div class="fg"><label>Right</label><input type="text" id="hf-hr" placeholder="e.g. {page}"></div>
+                </div>
+            </div>
+            <div class="hf-section" style="margin-top:14px">
+                <div class="hf-section-title"><i class="fas fa-arrow-down"></i> Footer</div>
+                <div class="cr3">
+                    <div class="fg"><label>Left</label><input type="text" id="hf-fl" placeholder=""></div>
+                    <div class="fg"><label>Center</label><input type="text" id="hf-fc" placeholder="e.g. Page {page} of {total}"></div>
+                    <div class="fg"><label>Right</label><input type="text" id="hf-fr" placeholder="e.g. {date}"></div>
+                </div>
+            </div>
+            <div class="cr" style="margin-top:14px">
+                <div class="fg"><label>Font Size</label><input type="number" id="hf-size" value="10" min="6" max="24" style="font-size:14px"></div>
+                <div class="fg"><label>Color</label>
+                    <div class="cpw"><input type="color" id="hf-color" value="#333333"><span id="hf-color-hex">#333333</span></div>
+                </div>
+            </div>
+            <div class="fg"><label>Skip first <span id="hf-skip-val">0</span> page(s)</label>
+                <input type="range" id="hf-skip" min="0" max="10" value="0">
+            </div>
+            <div class="compress-hint" style="text-align:left;margin-top:8px">Variables: {page} {total} {date} {filename}</div>
+            <div class="toolbar" style="margin-top:16px">
+                <button class="tool-btn primary" id="btn-hf-apply"><i class="fas fa-check"></i> Apply</button>
+                <button class="tool-btn" id="btn-hf-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== PASSWORD MODAL ==================== -->
+<div class="modal-overlay" id="modal-password">
+    <div class="modal modal-sm">
+        <div class="ph"><i class="fas fa-lock"></i> Password &amp; Security
+            <button class="modal-close" id="pw-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div class="pw-tabs">
+                <button class="pw-tab on" data-tab="protect">Protect</button>
+                <button class="pw-tab" data-tab="remove">Remove</button>
+            </div>
+            <div class="pw-panel on" id="pw-protect-panel">
+                <div class="fg" style="margin-top:14px"><label>Open Password</label>
+                    <input type="password" id="pw-user" placeholder="Password to open" autocomplete="new-password">
+                </div>
+                <div class="fg"><label>Owner Password <span style="font-weight:400;color:var(--t3)">(optional, restricts editing)</span></label>
+                    <input type="password" id="pw-owner" placeholder="Owner password" autocomplete="new-password">
+                </div>
+            </div>
+            <div class="pw-panel" id="pw-remove-panel">
+                <div class="fg" style="margin-top:14px"><label>Current Password</label>
+                    <input type="password" id="pw-current" placeholder="Enter current password" autocomplete="current-password">
+                </div>
+                <div class="compress-hint" style="text-align:left;margin-top:8px">Removes encryption from all pages. Password must be correct.</div>
+            </div>
+            <div class="toolbar" style="margin-top:20px">
+                <button class="tool-btn primary" id="btn-pw-apply"><i class="fas fa-lock"></i> Apply</button>
+                <button class="tool-btn" id="btn-pw-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== REDACT MODAL ==================== -->
+<div class="modal-overlay" id="modal-redact">
+    <div class="modal modal-lg">
+        <div class="ph"><i class="fas fa-eraser"></i> Redact Page
+            <button class="modal-close" id="redact-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb" style="padding:0">
+            <div class="annotate-toolbar">
+                <div class="anno-tools-row">
+                    <span style="font-size:12px;color:var(--t2);padding:0 8px">Draw rectangles over content to permanently redact:</span>
+                    <div class="anno-sep"></div>
+                    <button class="anno-btn" id="btn-redact-undo"><i class="fas fa-undo"></i></button>
+                    <button class="anno-btn" id="btn-redact-clear"><i class="fas fa-trash-alt"></i></button>
+                </div>
+            </div>
+            <div class="annotate-canvas-wrap" id="redact-canvas-wrap" style="touch-action:none">
+                <div style="position:relative;display:inline-block">
+                    <canvas id="redact-canvas" style="display:block;box-shadow:0 8px 48px rgba(0,0,0,.4)"></canvas>
+                    <canvas id="redact-overlay" style="position:absolute;top:0;left:0;cursor:crosshair"></canvas>
+                </div>
+            </div>
+            <div class="toolbar" style="margin-top:0;border-top:1px solid var(--brd);border-radius:0;padding:12px 16px">
+                <button class="tool-btn primary" id="btn-redact-apply"><i class="fas fa-check"></i> Apply Redaction</button>
+                <button class="tool-btn" id="btn-redact-cancel"><i class="fas fa-times"></i> Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== SHARE MODAL ==================== -->
+<div class="modal-overlay" id="modal-share">
+    <div class="modal modal-sm">
+        <div class="ph"><i class="fas fa-share-nodes"></i> Share PDF
+            <button class="modal-close" id="share-close"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pb">
+            <div id="share-building" style="display:none;text-align:center;padding:16px 0">
+                <div class="progress-bar" style="margin-bottom:8px"><div class="progress-fill" id="share-progress-fill" style="width:0"></div></div>
+                <div style="font-size:12px;color:var(--t3)" id="share-progress-text">Building PDF…</div>
+            </div>
+            <div id="share-ready" style="display:none">
+                <div class="share-app-grid" id="share-app-grid"></div>
+                <p id="share-fallback-hint" style="display:none;font-size:12px;color:var(--t3);margin-top:12px;line-height:1.5;text-align:center">
+                    <i class="fas fa-info-circle" style="color:var(--acl)"></i>
+                    Your browser doesn't support direct sharing.<br>Use the Download button and share the file manually.
+                </p>
+            </div>
+            <div class="toolbar" style="margin-top:16px">
+                <button class="tool-btn primary" id="btn-share-go" style="width:100%;justify-content:center">
+                    <i class="fas fa-share-nodes"></i> Share to Apps
+                </button>
+                <button class="tool-btn" id="btn-share-cancel" style="flex:1;justify-content:center">
+                    <i class="fas fa-times"></i> Close
+                </button>
+            </div>
+        </div>
     </div>
 </div>
 

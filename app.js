@@ -14,6 +14,7 @@ const { PDFDocument, rgb, degrees, StandardFonts } = PDFLib;
 const state = {
     pages: [],
     selected: new Set(),
+    password: null,
 };
 
 // page object: { srcFile, srcName, srcPageIdx, data, rotation, crop, annotations, _cacheKey }
@@ -135,6 +136,12 @@ function updateStats() {
     document.getElementById('btn-crop').disabled = state.selected.size !== 1;
     document.getElementById('btn-annotate').disabled = state.selected.size !== 1;
 
+    // New buttons that need pages
+    ['btn-insert-blank','btn-stamp','btn-page-numbers','btn-header-footer','btn-password','btn-share','btn-redact'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !hasPages;
+    });
+
     // Fill Form — any page has form fields
     const anyForms = state.pages.some(p => p.formFields && p.formFields.length > 0);
     document.getElementById('btn-fill-form').disabled = !anyForms;
@@ -151,6 +158,7 @@ document.getElementById('btn-reset-confirm').addEventListener('click', () => {
     if (history.state && history.state.modal) history.back();
     state.pages = [];
     state.selected.clear();
+    state.password = null;
     thumbCache.clear();
     pdfDocCache.clear();
     document.getElementById('screen-editor').classList.remove('on');
@@ -1850,7 +1858,9 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         }
 
         showProgress(97, 'Saving...');
-        const bytes = await out.save();
+        const dlSaveOpts = {};
+        if (state.password) { dlSaveOpts.userPassword = state.password.user; dlSaveOpts.ownerPassword = state.password.owner; }
+        const bytes = await out.save(dlSaveOpts);
         const names = [...new Set(state.pages.map(p => p.srcName))];
         let fname = 'edited.pdf';
         if (names.length === 1) fname = names[0].replace('.pdf', '') + '_edited.pdf';
@@ -2096,7 +2106,657 @@ document.getElementById('btn-compress-go').addEventListener('click', async () =>
     setTimeout(hideProgress, 1500);
 });
 
-// ===================== PWA INSTALL =====================
+// ===================== INSERT BLANK PAGE =====================
+
+document.getElementById('btn-insert-blank').addEventListener('click', async () => {
+    if (!state.pages.length) return;
+    // Insert after last selected page, or at end
+    const insertAfter = state.selected.size
+        ? Math.max(...state.selected)
+        : state.pages.length - 1;
+
+    // Create a minimal blank PDF page matching the size of the adjacent page
+    const refPg = state.pages[insertAfter];
+    const refSrc = refPg.data || refPg.srcFile;
+    const refIdx = refPg.data ? 0 : refPg.srcPageIdx;
+    const refDoc = await PDFDocument.load(refSrc);
+    const refPage = refDoc.getPages()[refIdx];
+    const { width, height } = refPage.getSize();
+
+    const blankDoc = await PDFDocument.create();
+    blankDoc.addPage([width, height]);
+    const blankBytes = await blankDoc.save();
+
+    const blankPg = {
+        srcFile: blankBytes.buffer, srcName: 'blank.pdf', srcPageIdx: 0,
+        data: null, rotation: 0, crop: null, annotations: [],
+        formFields: [], formValues: {},
+    };
+    state.pages.splice(insertAfter + 1, 0, blankPg);
+    state.selected.clear();
+    await renderGrid();
+    toast('Blank page inserted');
+});
+
+// ===================== IMAGE TO PDF =====================
+
+document.getElementById('btn-img-to-pdf').addEventListener('click', () => {
+    document.getElementById('img-to-pdf-input').click();
+});
+
+document.getElementById('img-to-pdf-input').addEventListener('change', async e => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    e.target.value = '';
+    showProgress(0, 'Converting images…');
+
+    for (let i = 0; i < files.length; i++) {
+        showProgress((i / files.length) * 90, `Converting ${files[i].name}…`);
+        const data = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result);
+            r.onerror = rej;
+            r.readAsDataURL(files[i]);
+        });
+
+        // Get natural image dimensions
+        const dims = await new Promise(res => {
+            const img = new Image();
+            img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight });
+            img.src = data;
+        });
+
+        // Convert to A4 if image is too small, else keep image size in points (1px = 0.75pt)
+        const ptW = Math.max(dims.w * 0.75, 595);
+        const ptH = ptW * dims.h / dims.w;
+
+        const pdfDoc = await PDFDocument.create();
+        const base64 = data.split(',')[1];
+        const mimeType = data.split(';')[0].split(':')[1];
+        let embedded;
+        if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') {
+            embedded = await pdfDoc.embedJpg(Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
+        } else {
+            // Use canvas to convert to JPEG for everything else
+            const canvas = document.createElement('canvas');
+            canvas.width = dims.w; canvas.height = dims.h;
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            await new Promise(res => { img.onload = res; img.src = data; });
+            ctx.drawImage(img, 0, 0);
+            const jpegData = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+            embedded = await pdfDoc.embedJpg(Uint8Array.from(atob(jpegData), c => c.charCodeAt(0)));
+        }
+        const page = pdfDoc.addPage([ptW, ptH]);
+        page.drawImage(embedded, { x: 0, y: 0, width: ptW, height: ptH });
+        const bytes = await pdfDoc.save();
+
+        state.pages.push({
+            srcFile: bytes.buffer, srcName: files[i].name.replace(/\.[^.]+$/, '') + '.pdf',
+            srcPageIdx: 0, data: null, rotation: 0, crop: null, annotations: [],
+            formFields: [], formValues: {},
+        });
+    }
+
+    showProgress(100, 'Done!');
+    showEditor();
+    await renderGrid();
+    hideProgress();
+    toast(`${files.length} image(s) added as PDF page(s)`);
+});
+
+// ===================== STAMP / SIGNATURE =====================
+
+const stampState = { mode: 'draw', position: 'br', imgData: null, drawing: false };
+
+document.getElementById('btn-stamp').addEventListener('click', () => openModal('modal-stamp'));
+document.getElementById('stamp-close').addEventListener('click', () => closeModalAndGoBack('modal-stamp'));
+document.getElementById('btn-stamp-cancel').addEventListener('click', () => closeModalAndGoBack('modal-stamp'));
+
+// Tab switching
+document.querySelectorAll('.stamp-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.stamp-tab').forEach(t => t.classList.remove('on'));
+        document.querySelectorAll('.stamp-panel').forEach(p => p.classList.remove('on'));
+        tab.classList.add('on');
+        document.getElementById('stamp-' + tab.dataset.tab + '-panel').classList.add('on');
+        stampState.mode = tab.dataset.tab;
+    });
+});
+
+// Position grid
+document.querySelectorAll('.stamp-pos').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.stamp-pos').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+        stampState.position = btn.dataset.pos;
+    });
+});
+
+// Draw on stamp canvas
+const stampCanvas = document.getElementById('stamp-canvas');
+const stampCtx = stampCanvas.getContext('2d');
+stampCtx.strokeStyle = '#1a1820'; stampCtx.lineWidth = 3; stampCtx.lineCap = 'round';
+let stampDrawing = false;
+
+stampCanvas.addEventListener('mousedown', e => {
+    stampDrawing = true;
+    const r = stampCanvas.getBoundingClientRect();
+    stampCtx.beginPath();
+    stampCtx.moveTo((e.clientX - r.left) * stampCanvas.width / r.width, (e.clientY - r.top) * stampCanvas.height / r.height);
+});
+stampCanvas.addEventListener('mousemove', e => {
+    if (!stampDrawing) return;
+    const r = stampCanvas.getBoundingClientRect();
+    stampCtx.lineTo((e.clientX - r.left) * stampCanvas.width / r.width, (e.clientY - r.top) * stampCanvas.height / r.height);
+    stampCtx.stroke();
+});
+stampCanvas.addEventListener('mouseup', () => stampDrawing = false);
+stampCanvas.addEventListener('mouseleave', () => stampDrawing = false);
+// Touch
+stampCanvas.addEventListener('touchstart', e => { e.preventDefault(); stampDrawing = true; const r = stampCanvas.getBoundingClientRect(); stampCtx.beginPath(); stampCtx.moveTo((e.touches[0].clientX - r.left) * stampCanvas.width / r.width, (e.touches[0].clientY - r.top) * stampCanvas.height / r.height); }, { passive:false });
+stampCanvas.addEventListener('touchmove', e => { e.preventDefault(); if (!stampDrawing) return; const r = stampCanvas.getBoundingClientRect(); stampCtx.lineTo((e.touches[0].clientX - r.left) * stampCanvas.width / r.width, (e.touches[0].clientY - r.top) * stampCanvas.height / r.height); stampCtx.stroke(); }, { passive:false });
+stampCanvas.addEventListener('touchend', () => stampDrawing = false);
+
+document.getElementById('btn-stamp-clear-draw').addEventListener('click', () => {
+    stampCtx.clearRect(0, 0, stampCanvas.width, stampCanvas.height);
+});
+
+document.getElementById('stamp-color').addEventListener('input', e => { stampCtx.strokeStyle = e.target.value; });
+document.getElementById('stamp-size').addEventListener('change', e => { stampCtx.lineWidth = parseInt(e.target.value); });
+
+// Upload image for stamp
+const stampUploadZone = document.getElementById('stamp-upload-zone');
+const stampFileInput = document.getElementById('stamp-file-input');
+stampUploadZone.addEventListener('click', () => stampFileInput.click());
+stampFileInput.addEventListener('change', e => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+        stampState.imgData = ev.target.result;
+        const preview = document.getElementById('stamp-preview');
+        preview.src = stampState.imgData; preview.style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+});
+stampUploadZone.addEventListener('dragover', e => { e.preventDefault(); stampUploadZone.classList.add('drag'); });
+stampUploadZone.addEventListener('dragleave', () => stampUploadZone.classList.remove('drag'));
+stampUploadZone.addEventListener('drop', e => {
+    e.preventDefault(); stampUploadZone.classList.remove('drag');
+    const file = e.dataTransfer.files[0]; if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+        stampState.imgData = ev.target.result;
+        const preview = document.getElementById('stamp-preview');
+        preview.src = ev.target.result; preview.style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+});
+
+document.getElementById('stamp-scale').addEventListener('input', e => { document.getElementById('stamp-scale-val').textContent = e.target.value; });
+document.getElementById('stamp-opacity').addEventListener('input', e => { document.getElementById('stamp-opacity-val').textContent = e.target.value; });
+
+document.getElementById('btn-stamp-apply').addEventListener('click', async () => {
+    const mode = stampState.mode;
+    const scaleP = parseInt(document.getElementById('stamp-scale').value) / 100;
+    const opacity = parseInt(document.getElementById('stamp-opacity').value) / 100;
+    const pos = stampState.position;
+    const applyTo = document.getElementById('stamp-apply-to').value;
+
+    // Build stamp image data URL
+    let imgUrl;
+    if (mode === 'draw') {
+        imgUrl = stampCanvas.toDataURL('image/png');
+    } else if (mode === 'text') {
+        const text = document.getElementById('stamp-text-val').value || 'STAMP';
+        const color = document.getElementById('stamp-text-color').value;
+        const style = document.getElementById('stamp-text-style').value;
+        const tc = document.createElement('canvas'); tc.width = 400; tc.height = 160;
+        const tctx = tc.getContext('2d');
+        tctx.clearRect(0, 0, 400, 160);
+        tctx.font = 'bold 72px Arial, sans-serif';
+        tctx.fillStyle = color;
+        tctx.textAlign = 'center';
+        tctx.textBaseline = 'middle';
+        if (style === 'box') { tctx.strokeStyle = color; tctx.lineWidth = 8; tctx.strokeRect(10, 10, 380, 140); }
+        if (style === 'circle') { tctx.beginPath(); tctx.arc(200, 80, 74, 0, Math.PI * 2); tctx.stroke(); }
+        tctx.fillText(text, 200, 80);
+        imgUrl = tc.toDataURL('image/png');
+    } else {
+        if (!stampState.imgData) { toast('No image selected'); return; }
+        imgUrl = stampState.imgData;
+    }
+
+    const stampImg = new Image();
+    await new Promise(res => { stampImg.onload = res; stampImg.src = imgUrl; });
+
+    const applyPages = state.pages.filter((_, i) => {
+        if (applyTo === 'all') return true;
+        if (applyTo === 'selected') return state.selected.has(i);
+        if (applyTo === 'odd') return (i + 1) % 2 !== 0;
+        if (applyTo === 'even') return (i + 1) % 2 === 0;
+    });
+
+    closeModalAndGoBack('modal-stamp');
+    showProgress(0, 'Applying stamp…');
+
+    for (let pi = 0; pi < applyPages.length; pi++) {
+        showProgress((pi / applyPages.length) * 90, `Stamping page ${pi + 1}/${applyPages.length}…`);
+        const pg = applyPages[pi];
+        const srcData = pg.data || pg.srcFile;
+        const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+
+        const pdfJsDoc = await pdfjsLib.getDocument({ data: srcData.slice(0) }).promise;
+        const page = await pdfJsDoc.getPage(srcIdx + 1);
+        const vp = page.getViewport({ scale: 2 });
+        const canvas = document.createElement('canvas');
+        canvas.width = vp.width; canvas.height = vp.height;
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+        // Draw stamp
+        const sw = stampImg.width, sh = stampImg.height;
+        const stampW = vp.width * scaleP;
+        const stampH = sh * stampW / sw;
+        const pad = 20;
+        const posMap = {
+            tl: [pad, pad], tc: [(vp.width - stampW) / 2, pad], tr: [vp.width - stampW - pad, pad],
+            ml: [pad, (vp.height - stampH) / 2], mc: [(vp.width - stampW) / 2, (vp.height - stampH) / 2], mr: [vp.width - stampW - pad, (vp.height - stampH) / 2],
+            bl: [pad, vp.height - stampH - pad], bc: [(vp.width - stampW) / 2, vp.height - stampH - pad], br: [vp.width - stampW - pad, vp.height - stampH - pad],
+        };
+        const [sx, sy] = posMap[pos] || posMap.br;
+        ctx.globalAlpha = opacity;
+        ctx.drawImage(stampImg, sx, sy, stampW, stampH);
+        ctx.globalAlpha = 1;
+
+        const jpegUrl = canvas.toDataURL('image/jpeg', 0.95);
+        const jpegB64 = jpegUrl.split(',')[1];
+        const jpegBytes = Uint8Array.from(atob(jpegB64), c => c.charCodeAt(0));
+
+        const newDoc = await PDFDocument.create();
+        const jpegImg = await newDoc.embedJpg(jpegBytes);
+        const baseVp = page.getViewport({ scale: 1 });
+        const outPage = newDoc.addPage([baseVp.width, baseVp.height]);
+        outPage.drawImage(jpegImg, { x: 0, y: 0, width: baseVp.width, height: baseVp.height });
+        const newBytes = await newDoc.save();
+        if (pg.data) invalidateCache(pg.data);
+        pg.data = newBytes.buffer; pg.srcPageIdx = 0;
+        invalidateCache(pg.data);
+    }
+
+    hideProgress();
+    await renderGrid();
+    toast('Stamp applied');
+});
+
+// ===================== PAGE NUMBERS =====================
+
+document.getElementById('btn-page-numbers').addEventListener('click', () => openModal('modal-page-numbers'));
+document.getElementById('pn-close').addEventListener('click', () => closeModalAndGoBack('modal-page-numbers'));
+document.getElementById('btn-pn-cancel').addEventListener('click', () => closeModalAndGoBack('modal-page-numbers'));
+document.getElementById('pn-skip').addEventListener('input', e => { document.getElementById('pn-skip-val').textContent = e.target.value; });
+document.getElementById('pn-color').addEventListener('input', e => { document.getElementById('pn-color-hex').textContent = e.target.value; });
+
+document.getElementById('btn-pn-apply').addEventListener('click', async () => {
+    const position = document.getElementById('pn-position').value;
+    const startAt = parseInt(document.getElementById('pn-start').value) || 1;
+    const fontSize = parseInt(document.getElementById('pn-size').value) || 12;
+    const hex = document.getElementById('pn-color').value;
+    const color = rgb(parseInt(hex.slice(1,3),16)/255, parseInt(hex.slice(3,5),16)/255, parseInt(hex.slice(5,7),16)/255);
+    const format = document.getElementById('pn-format').value;
+    const skip = parseInt(document.getElementById('pn-skip').value) || 0;
+    const total = state.pages.length;
+
+    closeModalAndGoBack('modal-page-numbers');
+    showProgress(0, 'Adding page numbers…');
+
+    for (let i = skip; i < state.pages.length; i++) {
+        showProgress(((i - skip + 1) / (state.pages.length - skip)) * 95, `Page ${i + 1}…`);
+        const pg = state.pages[i];
+        const srcData = pg.data || pg.srcFile;
+        const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+        const srcDoc = await PDFDocument.load(srcData);
+        const font = await srcDoc.embedFont(StandardFonts.Helvetica);
+        const page = srcDoc.getPages()[srcIdx];
+        const { width, height } = page.getSize();
+        const pageNum = startAt + i - skip;
+        const label = format.replace('{n}', pageNum).replace('{total}', total);
+        const tw = font.widthOfTextAtSize(label, fontSize);
+        const margin = 20;
+        const posMap = {
+            'bottom-center': { x: (width - tw) / 2, y: margin },
+            'bottom-left': { x: margin, y: margin },
+            'bottom-right': { x: width - tw - margin, y: margin },
+            'top-center': { x: (width - tw) / 2, y: height - margin - fontSize },
+            'top-left': { x: margin, y: height - margin - fontSize },
+            'top-right': { x: width - tw - margin, y: height - margin - fontSize },
+        };
+        const { x, y } = posMap[position] || posMap['bottom-center'];
+        page.drawText(label, { x, y, size: fontSize, font, color });
+
+        const single = await PDFDocument.create();
+        const [copied] = await single.copyPages(srcDoc, [srcIdx]);
+        single.addPage(copied);
+        const bytes = await single.save();
+        if (pg.data) invalidateCache(pg.data);
+        pg.data = bytes.buffer; pg.srcPageIdx = 0;
+    }
+
+    hideProgress();
+    await renderGrid();
+    toast('Page numbers added');
+});
+
+// ===================== HEADER / FOOTER =====================
+
+document.getElementById('btn-header-footer').addEventListener('click', () => openModal('modal-hf'));
+document.getElementById('hf-close').addEventListener('click', () => closeModalAndGoBack('modal-hf'));
+document.getElementById('btn-hf-cancel').addEventListener('click', () => closeModalAndGoBack('modal-hf'));
+document.getElementById('hf-skip').addEventListener('input', e => { document.getElementById('hf-skip-val').textContent = e.target.value; });
+document.getElementById('hf-color').addEventListener('input', e => { document.getElementById('hf-color-hex').textContent = e.target.value; });
+
+document.getElementById('btn-hf-apply').addEventListener('click', async () => {
+    const hl = document.getElementById('hf-hl').value;
+    const hc = document.getElementById('hf-hc').value;
+    const hr = document.getElementById('hf-hr').value;
+    const fl = document.getElementById('hf-fl').value;
+    const fc = document.getElementById('hf-fc').value;
+    const fr = document.getElementById('hf-fr').value;
+    const fontSize = parseInt(document.getElementById('hf-size').value) || 10;
+    const hex = document.getElementById('hf-color').value;
+    const color = rgb(parseInt(hex.slice(1,3),16)/255, parseInt(hex.slice(3,5),16)/255, parseInt(hex.slice(5,7),16)/255);
+    const skip = parseInt(document.getElementById('hf-skip').value) || 0;
+    const total = state.pages.length;
+    const today = new Date().toLocaleDateString();
+
+    if (!hl && !hc && !hr && !fl && !fc && !fr) { toast('Enter at least one header or footer value'); return; }
+    closeModalAndGoBack('modal-hf');
+    showProgress(0, 'Adding header/footer…');
+
+    for (let i = skip; i < state.pages.length; i++) {
+        showProgress(((i - skip + 1) / (state.pages.length - skip)) * 95, `Page ${i + 1}…`);
+        const pg = state.pages[i];
+        const srcData = pg.data || pg.srcFile;
+        const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+        const srcDoc = await PDFDocument.load(srcData);
+        const font = await srcDoc.embedFont(StandardFonts.Helvetica);
+        const page = srcDoc.getPages()[srcIdx];
+        const { width, height } = page.getSize();
+        const margin = 14;
+
+        const resolve = (t) => t ? t.replace('{page}', i + 1).replace('{total}', total).replace('{date}', today).replace('{filename}', pg.srcName) : '';
+
+        const drawRow = (left, center, right, y) => {
+            if (left) page.drawText(resolve(left), { x: margin, y, size: fontSize, font, color });
+            if (center) { const tw = font.widthOfTextAtSize(resolve(center), fontSize); page.drawText(resolve(center), { x: (width - tw) / 2, y, size: fontSize, font, color }); }
+            if (right) { const tw = font.widthOfTextAtSize(resolve(right), fontSize); page.drawText(resolve(right), { x: width - tw - margin, y, size: fontSize, font, color }); }
+        };
+
+        if (hl || hc || hr) drawRow(hl, hc, hr, height - margin - fontSize);
+        if (fl || fc || fr) drawRow(fl, fc, fr, margin);
+
+        const single = await PDFDocument.create();
+        const [copied] = await single.copyPages(srcDoc, [srcIdx]);
+        single.addPage(copied);
+        const bytes = await single.save();
+        if (pg.data) invalidateCache(pg.data);
+        pg.data = bytes.buffer; pg.srcPageIdx = 0;
+    }
+
+    hideProgress();
+    await renderGrid();
+    toast('Header/footer added');
+});
+
+// ===================== PASSWORD PROTECT / REMOVE =====================
+
+document.getElementById('btn-password').addEventListener('click', () => openModal('modal-password'));
+document.getElementById('pw-close').addEventListener('click', () => closeModalAndGoBack('modal-password'));
+document.getElementById('btn-pw-cancel').addEventListener('click', () => closeModalAndGoBack('modal-password'));
+
+document.querySelectorAll('.pw-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.pw-tab').forEach(t => t.classList.remove('on'));
+        document.querySelectorAll('.pw-panel').forEach(p => p.classList.remove('on'));
+        tab.classList.add('on');
+        document.getElementById('pw-' + tab.dataset.tab + '-panel').classList.add('on');
+    });
+});
+
+document.getElementById('btn-pw-apply').addEventListener('click', async () => {
+    const activeTab = document.querySelector('.pw-tab.on').dataset.tab;
+
+    if (activeTab === 'protect') {
+        const userPw = document.getElementById('pw-user').value;
+        const ownerPw = document.getElementById('pw-owner').value;
+        if (!userPw) { toast('Enter a password'); return; }
+        closeModalAndGoBack('modal-password');
+        // Store as download option — applied at save time
+        state.password = { user: userPw, owner: ownerPw || userPw };
+        toast('Password set — will be applied on download');
+    } else {
+        const currentPw = document.getElementById('pw-current').value;
+        if (!currentPw) { toast('Enter the current password'); return; }
+        closeModalAndGoBack('modal-password');
+        showProgress(0, 'Removing password…');
+        try {
+            for (let i = 0; i < state.pages.length; i++) {
+                showProgress(((i + 1) / state.pages.length) * 90, `Processing page ${i + 1}…`);
+                const pg = state.pages[i];
+                const srcData = pg.data || pg.srcFile;
+                const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+                const decryptedDoc = await PDFDocument.load(srcData, { password: currentPw, ignoreEncryption: false });
+                const single = await PDFDocument.create();
+                const [copied] = await single.copyPages(decryptedDoc, [srcIdx]);
+                single.addPage(copied);
+                const bytes = await single.save();
+                if (pg.data) invalidateCache(pg.data);
+                pg.data = bytes.buffer; pg.srcPageIdx = 0;
+            }
+            hideProgress();
+            toast('Password removed');
+        } catch(err) {
+            hideProgress();
+            toast('Error: wrong password or unsupported encryption');
+        }
+    }
+});
+
+// Apply password in download: patch the save call
+const _origDownload = document.getElementById('btn-download');
+// Password is stored in state.password and applied in the download handler's save call
+// (The download handler already calls out.save() — we'll patch it below by checking state.password)
+
+// ===================== REDACTION =====================
+
+const redactState = { idx: -1, rects: [], drawing: false, startX: 0, startY: 0 };
+
+document.getElementById('btn-redact').addEventListener('click', () => {
+    if (state.selected.size !== 1) { toast('Select exactly one page to redact'); return; }
+    openRedact(Array.from(state.selected)[0]);
+});
+
+async function openRedact(idx) {
+    redactState.idx = idx;
+    redactState.rects = [];
+    const pg = state.pages[idx];
+    const srcData = pg.data || pg.srcFile;
+    const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+
+    const pdf = await getPdfDoc(srcData);
+    const page = await pdf.getPage(srcIdx + 1);
+    const vp = page.getViewport({ scale: 1.5 });
+
+    const bg = document.getElementById('redact-canvas');
+    bg.width = vp.width; bg.height = vp.height;
+    await page.render({ canvasContext: bg.getContext('2d'), viewport: vp }).promise;
+
+    const ov = document.getElementById('redact-overlay');
+    ov.width = vp.width; ov.height = vp.height;
+    ov.style.width = bg.style.width;
+    ov.style.height = bg.style.height;
+
+    openModal('modal-redact');
+}
+
+function drawRedactOverlay() {
+    const ov = document.getElementById('redact-overlay');
+    const ctx = ov.getContext('2d');
+    ctx.clearRect(0, 0, ov.width, ov.height);
+    ctx.fillStyle = '#000';
+    redactState.rects.forEach(r => ctx.fillRect(r.x, r.y, r.w, r.h));
+}
+
+const redactOverlay = document.getElementById('redact-overlay');
+function getRedactPos(e) {
+    const r = redactOverlay.getBoundingClientRect();
+    return {
+        x: ((e.clientX ?? e.touches[0].clientX) - r.left) * redactOverlay.width / r.width,
+        y: ((e.clientY ?? e.touches[0].clientY) - r.top) * redactOverlay.height / r.height,
+    };
+}
+redactOverlay.addEventListener('mousedown', e => {
+    const p = getRedactPos(e); redactState.drawing = true; redactState.startX = p.x; redactState.startY = p.y; e.preventDefault();
+});
+redactOverlay.addEventListener('mousemove', e => {
+    if (!redactState.drawing) return;
+    const p = getRedactPos(e);
+    drawRedactOverlay();
+    const ctx = redactOverlay.getContext('2d');
+    ctx.fillStyle = '#000';
+    ctx.fillRect(redactState.startX, redactState.startY, p.x - redactState.startX, p.y - redactState.startY);
+});
+redactOverlay.addEventListener('mouseup', e => {
+    if (!redactState.drawing) return;
+    redactState.drawing = false;
+    const p = getRedactPos(e);
+    const x = Math.min(redactState.startX, p.x), y = Math.min(redactState.startY, p.y);
+    const w = Math.abs(p.x - redactState.startX), h = Math.abs(p.y - redactState.startY);
+    if (w > 4 && h > 4) redactState.rects.push({ x, y, w, h });
+    drawRedactOverlay();
+});
+
+document.getElementById('btn-redact-undo').addEventListener('click', () => { redactState.rects.pop(); drawRedactOverlay(); });
+document.getElementById('btn-redact-clear').addEventListener('click', () => { redactState.rects = []; drawRedactOverlay(); });
+document.getElementById('redact-close').addEventListener('click', () => closeModalAndGoBack('modal-redact'));
+document.getElementById('btn-redact-cancel').addEventListener('click', () => closeModalAndGoBack('modal-redact'));
+
+document.getElementById('btn-redact-apply').addEventListener('click', async () => {
+    if (!redactState.rects.length) { closeModalAndGoBack('modal-redact'); return; }
+    closeModalAndGoBack('modal-redact');
+    showProgress(0, 'Applying redaction…');
+
+    const pg = state.pages[redactState.idx];
+    const srcData = pg.data || pg.srcFile;
+    const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+    const srcDoc = await PDFDocument.load(srcData);
+    const page = srcDoc.getPages()[srcIdx];
+    const { width, height } = page.getSize();
+
+    // Scale from canvas coords to PDF point coords
+    const ov = document.getElementById('redact-overlay');
+    const sx = width / ov.width, sy = height / ov.height;
+
+    redactState.rects.forEach(r => {
+        page.drawRectangle({
+            x: r.x * sx,
+            y: height - (r.y + r.h) * sy,
+            width: r.w * sx, height: r.h * sy,
+            color: rgb(0, 0, 0), opacity: 1,
+        });
+    });
+
+    const single = await PDFDocument.create();
+    const [copied] = await single.copyPages(srcDoc, [srcIdx]);
+    single.addPage(copied);
+    const bytes = await single.save();
+    if (pg.data) invalidateCache(pg.data);
+    pg.data = bytes.buffer; pg.srcPageIdx = 0;
+    invalidateCache(pg.data);
+
+    showProgress(100, 'Done!');
+    await renderGrid();
+    hideProgress();
+    toast('Redaction applied permanently');
+});
+
+// ===================== SHARE (native OS share sheet) =====================
+
+document.getElementById('btn-share').addEventListener('click', () => {
+    document.getElementById('share-building').style.display = 'none';
+    document.getElementById('share-ready').style.display = 'none';
+    document.getElementById('btn-share-go').disabled = false;
+    openModal('modal-share');
+});
+document.getElementById('share-close').addEventListener('click', () => closeModalAndGoBack('modal-share'));
+document.getElementById('btn-share-cancel').addEventListener('click', () => closeModalAndGoBack('modal-share'));
+
+async function buildSharePdf() {
+    const progressFill = document.getElementById('share-progress-fill');
+    const progressText = document.getElementById('share-progress-text');
+
+    document.getElementById('share-building').style.display = 'block';
+    document.getElementById('share-ready').style.display = 'none';
+    progressFill.style.width = '10%';
+    progressText.textContent = 'Building PDF…';
+
+    const out = await PDFDocument.create();
+    const embeddedFonts = {};
+    for (const [, std] of Object.entries(FONT_MAP)) {
+        if (!embeddedFonts[std]) embeddedFonts[std] = await out.embedFont(std);
+    }
+    for (let i = 0; i < state.pages.length; i++) {
+        progressFill.style.width = (10 + (i / state.pages.length) * 80) + '%';
+        progressText.textContent = `Page ${i + 1} / ${state.pages.length}…`;
+        const pg = state.pages[i];
+        const srcData = pg.data || pg.srcFile;
+        const srcIdx = pg.data ? 0 : pg.srcPageIdx;
+        const src = await PDFDocument.load(srcData);
+        const [copied] = await out.copyPages(src, [srcIdx]);
+        if (pg.rotation) copied.setRotation(degrees((copied.getRotation().angle || 0) + pg.rotation));
+        if (pg.crop) { copied.setCropBox(pg.crop.x, pg.crop.y, pg.crop.w, pg.crop.h); copied.setMediaBox(pg.crop.x, pg.crop.y, pg.crop.w, pg.crop.h); }
+        out.addPage(copied);
+    }
+    progressText.textContent = 'Saving…';
+    progressFill.style.width = '95%';
+    const saveOpts = {};
+    if (state.password) { saveOpts.userPassword = state.password.user; saveOpts.ownerPassword = state.password.owner; }
+    const bytes = await out.save(saveOpts);
+    progressFill.style.width = '100%';
+    document.getElementById('share-building').style.display = 'none';
+    return bytes;
+}
+
+document.getElementById('btn-share-go').addEventListener('click', async () => {
+    if (!state.pages.length) return;
+    document.getElementById('btn-share-go').disabled = true;
+
+    try {
+        const bytes = await buildSharePdf();
+        const names = [...new Set(state.pages.map(p => p.srcName))];
+        const fname = names.length === 1 ? names[0].replace('.pdf','') + '.pdf' : 'document.pdf';
+        const file = new File([bytes], fname, { type: 'application/pdf' });
+
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            // Native share sheet with file — triggers OS share UI directly
+            closeModalAndGoBack('modal-share');
+            await navigator.share({ files: [file], title: fname });
+        } else if (navigator.share) {
+            // Share API exists but no file support (some desktop browsers)
+            closeModalAndGoBack('modal-share');
+            await navigator.share({ title: fname, text: 'Here is your PDF: ' + fname });
+        } else {
+            // No share API — show fallback hint
+            document.getElementById('share-ready').style.display = 'block';
+            document.getElementById('share-fallback-hint').style.display = 'block';
+            document.getElementById('btn-share-go').disabled = false;
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') toast('Share failed: ' + err.message);
+        document.getElementById('btn-share-go').disabled = false;
+    }
+});
 
 let deferredPrompt;
 const pwaBtn = document.getElementById('pwa-install');

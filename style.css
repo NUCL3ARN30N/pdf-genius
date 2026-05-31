@@ -486,6 +486,32 @@ input[type="range"]::-webkit-slider-thumb {
     color:var(--acl); min-width:34px; text-align:right;
 }
 
+/* ===================== STAMP ===================== */
+.stamp-tabs, .pw-tabs { display:flex; gap:4px; margin-bottom:16px; background:var(--bg2); padding:4px; border-radius:var(--r1); }
+.stamp-tab, .pw-tab { flex:1; padding:8px; border:none; background:none; color:var(--t3); font-family:inherit; font-size:13px; font-weight:500; border-radius:7px; cursor:pointer; transition:all var(--tr); }
+.stamp-tab.on, .pw-tab.on { background:var(--card); color:var(--t1); box-shadow:0 1px 4px rgba(0,0,0,.3); }
+.stamp-panel, .pw-panel { display:none; }
+.stamp-panel.on, .pw-panel.on { display:block; }
+#stamp-canvas { display:block; width:100%; max-height:200px; background:#fff; border-radius:var(--r1); cursor:crosshair; border:1px solid var(--brd); }
+.stamp-draw-toolbar { display:flex; gap:8px; align-items:center; margin-top:10px; }
+.stamp-position-grid { display:grid; grid-template-columns:repeat(3,40px); gap:6px; }
+.stamp-pos { width:40px; height:40px; border:1px solid var(--brd); border-radius:var(--r1); background:var(--inp); cursor:pointer; transition:all var(--tr); }
+.stamp-pos.on { border-color:var(--ac); background:var(--acg); }
+.stamp-pos:hover { border-color:var(--t3); }
+
+/* ===================== HEADER/FOOTER ===================== */
+.hf-section-title { font-size:12px; font-weight:600; color:var(--t3); text-transform:uppercase; letter-spacing:.05em; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
+.hf-section-title i { color:var(--acl); }
+.cr3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+
+/* ===================== PASSWORD ===================== */
+/* (uses .pw-tabs / .pw-tab / .pw-panel above) */
+
+/* ===================== SHARE ===================== */
+.share-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.share-action-btn { flex:1; padding:10px 8px; border:1px solid var(--brd); border-radius:var(--r1); background:var(--inp); color:var(--t2); font-family:inherit; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; transition:all var(--tr); text-decoration:none; }
+.share-action-btn:hover { border-color:var(--ac); color:var(--t1); background:var(--hov); }
+
 /* ===================== FOOTER ===================== */
 footer {
     position:relative; z-index:1; text-align:center;
