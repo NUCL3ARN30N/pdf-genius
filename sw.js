@@ -1,4 +1,4 @@
-const CACHE = 'pdf-genius-v2';
+const CACHE = 'pdf-genius-v3';
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.json'];
 
 self.addEventListener('install', e => {

@@ -405,18 +405,56 @@ async function loadFiles(files) {
         // If password-protected, decrypt to a plain unencrypted stored buffer
         let workingData = storedData;
         if (password) {
+            let decryptedOk = false;
             try {
                 showProgress(((done + 1) / total) * 80, `Decrypting ${file.name}...`);
                 const encrypted = await safeLoad(storedData, { password, ignoreEncryption: false });
                 const decrypted = await PDFDocument.create();
                 const indices = encrypted.getPageIndices();
+                if (indices.length === 0) throw new Error('pdf-lib returned 0 pages');
                 const pages = await decrypted.copyPages(encrypted, indices);
                 pages.forEach(p => decrypted.addPage(p));
                 const decBytes = await safeSave(decrypted);
                 workingData = storeBuffer(decBytes);
-            } catch(e) {
-                toast(`Could not decrypt ${file.name}: ${e.message}`);
-                done++; continue;
+                decryptedOk = true;
+            } catch(e) { /* fall through to PDF.js render fallback */ }
+
+            if (!decryptedOk) {
+                // pdf-lib can't decrypt this encryption format — render each page via PDF.js
+                // (which already has the file open and decrypted) and re-encode as a clean PDF
+                try {
+                    showProgress(((done + 1) / total) * 80, `Rendering ${file.name}...`);
+                    const rendered = await PDFDocument.create();
+                    const pageCount = pdf.numPages;
+                    for (let pi = 0; pi < pageCount; pi++) {
+                        let ptW = 612, ptH = 792; // default letter size fallback
+                        try {
+                            const pdfPage = await pdf.getPage(pi + 1);
+                            const scale = 2;
+                            const vp = pdfPage.getViewport({ scale });
+                            ptW = vp.width / scale; ptH = vp.height / scale;
+                            const canvas = document.createElement('canvas');
+                            canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+                            try {
+                                await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+                            } catch(renderErr) { /* blank canvas is fine */ }
+                            const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
+                            if (blob) {
+                                const jpegImg = await rendered.embedJpg(new Uint8Array(await blob.arrayBuffer()));
+                                const page = rendered.addPage([ptW, ptH]);
+                                page.drawImage(jpegImg, { x: 0, y: 0, width: ptW, height: ptH });
+                                continue;
+                            }
+                        } catch(pageErr) { /* fall through to blank page */ }
+                        rendered.addPage([ptW, ptH]); // blank page if render failed
+                    }
+                    if (rendered.getPageCount() === 0) throw new Error('No pages rendered');
+                    const decBytes = await safeSave(rendered);
+                    workingData = storeBuffer(decBytes);
+                } catch(e2) {
+                    toast(`Could not import ${file.name}: ${e2.message}`);
+                    done++; continue;
+                }
             }
         }
 
@@ -2374,7 +2412,8 @@ document.getElementById('btn-download').addEventListener('click', async () => {
         }
 
         showProgress(97, 'Saving...');
-        const savedBytes = await safeSave(out);
+        // useObjectStreams:false ensures a traditional xref table, required by our RC4 encryptPdf
+        const savedBytes = await safeSave(out, { useObjectStreams: false });
 
         let finalBytes;
         if (state.password) {
@@ -2565,9 +2604,10 @@ async function encryptPdf(pdfBytes, userPassword, ownerPassword) {
     // ── Encrypt each stream in place ───────────────────────────────────
     const output = data.slice(); // mutable copy
 
-    // Helper: find byte sequence in output starting at pos
-    function findSeq(seq, from) {
-        outer: for (let i = from; i <= output.length - seq.length; i++) {
+    // Helper: find byte sequence in output within [from, limit)
+    function findSeq(seq, from, limit) {
+        const end = Math.min(limit ?? output.length, output.length) - seq.length;
+        outer: for (let i = from; i <= end; i++) {
             for (let j = 0; j < seq.length; j++) {
                 if (output[i+j] !== seq[j]) continue outer;
             }
@@ -2579,12 +2619,19 @@ async function encryptPdf(pdfBytes, userPassword, ownerPassword) {
     const STREAM_KW = new Uint8Array([115,116,114,101,97,109]); // 'stream'
     const ENDSTREAM_KW = new Uint8Array([101,110,100,115,116,114,101,97,109]); // 'endstream'
 
-    for (const [objNum, {offset, gen}] of xrefObjects) {
+    // Sort objects by file offset so we know each object's byte range
+    const sortedObjs = [...xrefObjects.entries()].sort((a, b) => a[1].offset - b[1].offset);
+
+    for (let si = 0; si < sortedObjs.length; si++) {
+        const [objNum, {offset, gen}] = sortedObjs[si];
         if (objNum === 0) continue;
 
-        // Find 'stream' keyword starting from this object's offset
-        const sPos = findSeq(STREAM_KW, offset);
-        if (sPos === -1 || sPos > offset + 4096) continue; // no stream or too far
+        // Each object ends where the next one begins (or EOF)
+        const objEnd = si + 1 < sortedObjs.length ? sortedObjs[si + 1][1].offset : output.length;
+
+        // Find 'stream' keyword only within this object's own byte range
+        const sPos = findSeq(STREAM_KW, offset, objEnd);
+        if (sPos === -1) continue; // not a stream object
 
         // Stream content starts after 'stream' + EOL
         const after = sPos + STREAM_KW.length;
@@ -2593,8 +2640,8 @@ async function encryptPdf(pdfBytes, userPassword, ownerPassword) {
         else if (output[after] === 0x0A) contentStart = after + 1;
         else continue; // 'stream' not followed by EOL — not a real stream
 
-        // Find endstream
-        const esPos = findSeq(ENDSTREAM_KW, contentStart);
+        // Find endstream within this object's range
+        const esPos = findSeq(ENDSTREAM_KW, contentStart, objEnd);
         if (esPos === -1) continue;
 
         // Content ends before \r\n or \n before endstream
@@ -3265,11 +3312,10 @@ document.getElementById('btn-pw-apply').addEventListener('click', async () => {
 
     if (activeTab === 'protect') {
         const userPw = document.getElementById('pw-user').value;
-        const ownerPw = document.getElementById('pw-owner').value;
         if (!userPw) { toast('Enter a password'); return; }
         closeModalAndGoBack('modal-password');
         // Store as download option — applied at save time
-        state.password = { user: userPw, owner: ownerPw || userPw };
+        state.password = { user: userPw, owner: userPw };
         toast('Password set — will be applied on download');
     } else {
         const currentPw = document.getElementById('pw-current').value;
